@@ -75,15 +75,13 @@ def fit_best_chebyshev(x, y, min_deg=2, max_deg=None, criterion="bic"):
     y_fit = best["y_fit"]
     return coeffs, degree, y_fit, best
 
-def visualize_bitsi_with_extrema(bitsi_x, bitsi_y, bitsi_z):
+def visualize_bitsi_with_extrema(bitsi_x, bitsi_y, bitsi_z, dominant_idx):
     # Axis conventions
     axis_names = ["X", "Y", "Z"]
     axis_colors = {"X": "r", "Y": "g", "Z": "b"}
     all_bitsi = [bitsi_x, bitsi_y, bitsi_z]
 
-    # --- Find dominant direction (largest variation)
-    variances = [np.var(b) for b in all_bitsi]
-    dominant_idx = int(np.argmax(variances))
+
     dominant_axis = axis_names[dominant_idx]
 
     y = np.array(all_bitsi[dominant_idx], dtype=float)
@@ -120,7 +118,7 @@ def visualize_bitsi_with_extrema(bitsi_x, bitsi_y, bitsi_z):
     print(f"📍 Slice indices near extrema: {slice_indices}")
     plt.show()
 
-    return dominant_axis, slice_indices, coeffs
+    return x, y_fit, extrema_idx
 
 def visualize_bitsi(bitsi_x, bitsi_y, bitsi_z):
     """
@@ -146,6 +144,64 @@ def visualize_bitsi(bitsi_x, bitsi_y, bitsi_z):
     plt.suptitle("BITSI Metric Distribution by Axis", fontsize=14, y=1.03)
     plt.tight_layout()
     plt.show()
+
+def segment_from_extrema(x, y_fit, extrema_idx):
+    """
+    Segment a BITSI curve using the provided extrema indices.
+
+    Parameters
+    ----------
+    x : array-like
+        Slice indices.
+    y_fit : array-like
+        Smoothed/fitted BITSI curve.
+    extrema_idx : list[int]
+        Indices of extrema (minima and/or maxima) from derivative sign changes.
+
+    Returns
+    -------
+    segments : list[tuple[int, int]]
+        List of slice index ranges for each segment.
+    extrema_sorted : list[int]
+        Sorted list of extrema indices actually used.
+    """
+    x = np.asarray(x)
+    y_fit = np.asarray(y_fit)
+
+    if len(extrema_idx) == 0:
+        return [(0, len(x) - 1)], []
+
+    # Sort and deduplicate extrema
+    extrema_sorted = sorted(set(int(i) for i in extrema_idx))
+
+    # Remove extrema too close together (1–2 slices apart)
+    filtered_extrema = []
+    for i in extrema_sorted:
+        if not filtered_extrema or abs(i - filtered_extrema[-1]) > 2:
+            filtered_extrema.append(i)
+
+    # Build boundaries: start → extrema → end
+    boundaries = [0] + filtered_extrema + [len(x) - 1]
+    segments = [(boundaries[i], boundaries[i + 1]) for i in range(len(boundaries) - 1)]
+
+    print(f"🧭 Found {len(filtered_extrema)} extrema → {len(segments)} segments")
+    print(f"📍 Extrema at slices: {filtered_extrema}")
+    print(f"🪚 Segment ranges: {segments}")
+
+    # Visualization hint
+    plt.figure(figsize=(8, 5))
+    plt.plot(x, y_fit, "--k", alpha=0.6)
+    for i in filtered_extrema:
+        plt.scatter(i, y_fit[i], color="orange", s=50, zorder=3)
+        plt.text(i, y_fit[i] + 0.05, f"ext {i}", ha="center", color="orange")
+        plt.axvline(i, color="gray", linestyle="--", alpha=0.5)
+    plt.title("BITSI segmentation via extrema")
+    plt.xlabel("Slice Index")
+    plt.ylabel("BITSI Value")
+    plt.grid(True)
+    plt.show()
+
+    return segments, filtered_extrema
 
 def pretty_print_bitsi(bitsi_x, bitsi_y, bitsi_z, slice_idx):
     axis_names = ["X", "Y", "Z"]
@@ -214,7 +270,7 @@ def main():
     # Calculate BITSI Metric
     # -------------------------------------------------------------------------
     cloud_object = build_cloud_object(pcd, gripper_width, gripper_height)
-    thickness = auto_thickness(cloud_object, scale=0.02)
+    thickness = auto_thickness(cloud_object, scale=0.03)
     print(f"📏 Adaptive thickness selected: {thickness:.6f} (scale=5%)")
     print("⚙️  Computing BITSI metrics...")
     bitsi_x, bitsi_y, bitsi_z, slice_idx = bitsi_metric(cloud_object, epsilon=epsilon, thickness=thickness)
@@ -224,7 +280,8 @@ def main():
     # -------------------------------------------------------------------------
     # Segmentation With BITSI Metric
     # -------------------------------------------------------------------------
-    visualize_bitsi_with_extrema(bitsi_x, bitsi_y, bitsi_z)
+    x, y_fit, extrema_idx = visualize_bitsi_with_extrema(bitsi_x, bitsi_y, bitsi_z, slice_idx)
+    segment_from_extrema(x, y_fit, extrema_idx)
 
 
 if __name__ == "__main__":
