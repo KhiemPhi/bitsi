@@ -380,6 +380,8 @@ class PointCloud(object):
     def transform_to_object_frame(self):
       # Transforming all the points such that they are expressed in the object reference frame:
       self.points = np.asarray(self.processed_cloud.points)
+      self.original_world_points = np.asarray(self.processed_cloud.points) 
+      
       self.R_object = np.matmul(self.R_base, self.R_bounding_box)
       self.transformed_points_object_frame = np.zeros([self.points.shape[0], self.points.shape[1]])
 

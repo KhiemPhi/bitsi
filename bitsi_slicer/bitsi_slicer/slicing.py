@@ -13,7 +13,20 @@ import os
 def build_cloud_object(pcd, gripper_width, gripper_height):
     cloud_object = PointCloud()
     cloud_object.processed_cloud = pcd
+    
+    import numpy as np
+    from sklearn.decomposition import PCA
+
+   
+    
     cloud_object.points = np.asarray(cloud_object.processed_cloud.points)
+    # if cloud_object.points.shape[0] >= 3:
+    #     pca = PCA(n_components=3)
+    #     pca.fit(cloud_object.points)
+    #     cloud_object.pca_mean = np.mean(cloud_object.points, axis=0)
+    #     cloud_object.pca_components = pca.components_
+    #     cloud_object.points = np.dot(cloud_object.points - cloud_object.pca_mean, cloud_object.pca_components.T)
+    #     cloud_object.processed_cloud.points = o3d.utility.Vector3dVector(cloud_object.points)
 
     # Computing the normals for this point cloud:
     cloud_object.processed_cloud.normals = o3d.utility.Vector3dVector(np.zeros((1, 3)))
@@ -418,7 +431,7 @@ def search_dimesion_slice(cloud_object, gripper_length, ibr_ratio, base_ibr):
     if ibr_ratio > base_ibr: 
         print('Bounding Box is Well Approximated')
         return None, None
-    elif np.any(graspable_dim > gripper_length): 
+    else:
         slice_idx = np.argmax(graspable_dim)
         if slice_idx == 2: 
             uncheck_idx = [0,1]
@@ -426,10 +439,21 @@ def search_dimesion_slice(cloud_object, gripper_length, ibr_ratio, base_ibr):
             uncheck_idx = [np.int(np.logical_not(np.argmax(graspable_dim)))]
     
         
-    else:
-        print("Splitting not required")
-        return None, None
-    return slice_idx, uncheck_idx 
+   
+    return slice_idx, uncheck_idx
+
+def get_overall_ibr_ratio(cloud_object, epsilon=1e-3, thickness=0.001, gripper_length=0.13, base_ibr=0.7):
+    left_face, right_face, front_face, back_face, top_face, bottom_face = get_faces(cloud_object)
+    faces = [left_face, right_face, front_face, back_face, top_face, bottom_face]
+    object_frame_points = np.asarray(cloud_object.cloud_object_frame.points)   
+    face_distances, unit_vec = get_face_distance(faces, object_frame_points, cloud_object) 
+    vertices = cloud_object.transformed_vertices_object_frame
+    boundary_idx = np.where(np.any(face_distances <= epsilon, axis=1))[0]
+    interior_idx =np.where(np.any(face_distances > epsilon, axis=1))[0]
+    total = len(boundary_idx) + len(interior_idx)
+    ibr_ratio = len(boundary_idx) / total if total > 0 else 0
+
+    return ibr_ratio
 
 def bitsi_metric (cloud_object, epsilon=1e-3, thickness=0.001, gripper_length=0.13, base_ibr=0.7):
     
@@ -449,11 +473,30 @@ def bitsi_metric (cloud_object, epsilon=1e-3, thickness=0.001, gripper_length=0.
     slice_bbox_vertices_y = slice_bbox(vertices, cloud_object, thickness=thickness, slice_idx=1)
     slice_bbox_vertices_z = slice_bbox(vertices, cloud_object, thickness=thickness, slice_idx=2)
 
-    ibr_ratios_x, _, _ = accumulate_slices(slice_bbox_vertices_x, object_frame_points, face_distances, epsilon)
-    ibr_ratios_y, _, _ = accumulate_slices(slice_bbox_vertices_y, object_frame_points, face_distances, epsilon)
-    ibr_ratios_z, _, _ = accumulate_slices(slice_bbox_vertices_z, object_frame_points, face_distances, epsilon)
+    ibr_ratios_x, _, points_per_slice_x = accumulate_slices(slice_bbox_vertices_x, object_frame_points, face_distances, epsilon)
+    ibr_ratios_y, _, points_per_slice_y = accumulate_slices(slice_bbox_vertices_y, object_frame_points, face_distances, epsilon)
+    ibr_ratios_z, _, points_per_slice_z = accumulate_slices(slice_bbox_vertices_z, object_frame_points, face_distances, epsilon)
+    
+    # Apply smoothing to IBR ratios using a Savitzky-Golay filter to reduce noise
+    from scipy.signal import savgol_filter
 
-    return ibr_ratios_x, ibr_ratios_y, ibr_ratios_z, slice_idx
+    # Set filter parameters
+    window_length = min(9, len(ibr_ratios_x) - 1 if len(ibr_ratios_x) % 2 == 0 else len(ibr_ratios_x))  # Must be odd and less than data length
+    poly_order = 3  # Polynomial order for fitting
+
+    # Ensure window length is odd
+    if window_length % 2 == 0:
+        window_length -= 1
+    
+    # Apply smoothing if enough data points
+    if len(ibr_ratios_x) > window_length:
+        ibr_ratios_x = savgol_filter(ibr_ratios_x, window_length, poly_order)
+    if len(ibr_ratios_y) > window_length:
+        ibr_ratios_y = savgol_filter(ibr_ratios_y, window_length, poly_order)
+    if len(ibr_ratios_z) > window_length:
+        ibr_ratios_z = savgol_filter(ibr_ratios_z, window_length, poly_order)
+
+    return ibr_ratios_x, ibr_ratios_y, ibr_ratios_z, slice_idx, points_per_slice_x, points_per_slice_y, points_per_slice_z
 
 
 def slice_object_bbox(cloud_object, gripper_length=0.11, epsilon=1e-3, thickness=0.001, theta=0.1, base_ibr=0.7, area_threshold=1e-4, resolution=0.01, check=False, obj_name="" ):
