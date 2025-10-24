@@ -171,7 +171,7 @@ def visualize_tree_segments(root_node):
     plt.tight_layout()
     plt.show()
     
-def bitsi_with_extrema(bitsi_x, bitsi_y, bitsi_z, dominant_idx, visualize=True, strength_threshold=0.2):
+def bitsi_with_extrema(bitsi_x, bitsi_y, bitsi_z, dominant_idx, visualize=True, strength_threshold=0.2, max_deg=10):
     # Axis conventions
     axis_names = ["X", "Y", "Z"]
     axis_colors = {"X": "r", "Y": "g", "Z": "b"}
@@ -182,7 +182,7 @@ def bitsi_with_extrema(bitsi_x, bitsi_y, bitsi_z, dominant_idx, visualize=True, 
     y = np.array(all_bitsi[dominant_idx], dtype=float)
     x = np.arange(len(y))
     # --- Fit best Chebyshev polynomial
-    coeffs, degree, y_fit, metrics, inflections = fit_best_chebyshev(x, y, min_deg=2, max_deg=6, criterion="bic", strength_threshold=strength_threshold)
+    coeffs, degree, y_fit, metrics, inflections = fit_best_chebyshev(x, y, min_deg=2, max_deg=max_deg, criterion="bic", strength_threshold=strength_threshold)
     print(f"🎯 Chosen Chebyshev degree {degree}, adj R²={metrics['adj_r2']:.3f}, BIC={metrics['bic']:.2f}")
 
 
@@ -349,8 +349,8 @@ def fuse_consecutive_segments(node, ibr_tolerance=0.2):
     node.children = fused_children
     return node
 
-def build_segmentation_tree(points_per_slice_to_use, bitsi_x, bitsi_y, bitsi_z, slice_idx, strength_threshold):
-    x, y_fit, inflections = bitsi_with_extrema(bitsi_x, bitsi_y, bitsi_z, slice_idx, visualize=True, strength_threshold=strength_threshold)
+def build_segmentation_tree(points_per_slice_to_use, bitsi_x, bitsi_y, bitsi_z, slice_idx, strength_threshold, max_deg=6):
+    x, y_fit, inflections = bitsi_with_extrema(bitsi_x, bitsi_y, bitsi_z, slice_idx, visualize=True, strength_threshold=strength_threshold, max_deg=max_deg)
     x_min, x_max = np.min(x), np.max(x)
     boundaries = [x_min] + inflections.tolist() + [x_max]
 
@@ -368,6 +368,8 @@ def build_segmentation_tree(points_per_slice_to_use, bitsi_x, bitsi_y, bitsi_z, 
 
     for i, pts in enumerate(point_segments):
         total_points = sum(len(point) for point in pts)
+        if total_points == 0:
+            continue
         child = SegmentNode(name=f"segment_{i+1}", points=[p for sublist in pts for p in sublist], parent=root, slice_idx=None)
         root.add_child(child)
         print(f"Segment {i+1}: {total_points} points")

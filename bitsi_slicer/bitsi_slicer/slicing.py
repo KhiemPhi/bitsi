@@ -7,8 +7,8 @@ import string
 from .point_cloud import PointCloud
 from .occupancy import OccupancyStruct
 import os 
-
-
+from numba import njit
+from itertools import groupby
 
 def build_cloud_object(pcd, gripper_width, gripper_height):
     cloud_object = PointCloud()
@@ -104,52 +104,72 @@ def get_faces(cloud_object):
 
 def slice_bbox(vertices, cloud_object, thickness, slice_idx):
     """
-    Partition a set of points in a point cloud into bounding boxes.
+    Partition a 3D bounding box (8x3 vertices) into multiple slices along a given axis.
 
     Parameters:
-    - point_cloud: numpy array representing the point cloud (Nx3, N points in 3D space)
-    - box_dimensions: tuple (lx, wx, h) representing the dimensions of the bounding box
+    - vertices: (8,3) array of bbox corners.
+    - cloud_object: (unused in current function, kept for API consistency).
+    - thickness: step size along the slicing axis.
+    - slice_idx: 0, 1, or 2 → axis along which to slice.
 
     Returns:
-    - list of numpy arrays, each array representing points within a bounding box
-    """    
-    #1. Pick Axis to Slice From
-    start_value = np.min(vertices[:, slice_idx], axis=0)
-    end_value = np.max(vertices[:, slice_idx], axis=0)
-    # Determine the direction of the step size
-    direction = 1 if thickness > 0 else -1
-    # Calculate the adjusted stop value based on the direction
-    stop_value = end_value + direction * np.finfo(float).eps  # Adding epsilon to avoid floating-point precision issues
-    steps = np.arange(start_value, stop_value+thickness, thickness)
-    new_vertices = []
-    for i in range(len(steps) - 1):
-        step_value_min = steps[i]
-        step_value_max = steps[i+1]
-        new_bbox = vertices.copy()
-        
-        for vertex in new_bbox: 
-            if vertex[slice_idx] == start_value:
-                vertex[slice_idx] = step_value_min
-            else: 
-                vertex[slice_idx] = step_value_max
-        new_vertices.append(new_bbox)
-        
-    return new_vertices
+    - List of (8,3) numpy arrays, one per sliced bbox.
+    """
+    vertices = np.asarray(vertices, dtype=np.float64)
+    assert vertices.shape == (8, 3), "vertices must be shape (8, 3)"
+
+    # Axis bounds
+    start_value = np.min(vertices[:, slice_idx])
+    end_value = np.max(vertices[:, slice_idx])
+    direction = np.sign(thickness)
+    stop_value = end_value + direction * np.finfo(float).eps
+
+    # Compute slice boundaries
+    steps = np.arange(start_value, stop_value + thickness, thickness)
+    n_slices = len(steps) - 1
+
+    # Vectorized creation of all slices
+    low_vals = steps[:-1][:, None]
+    high_vals = steps[1:][:, None]
+
+    # Create (n_slices, 8, 3) array of boxes
+    all_boxes = np.repeat(vertices[None, :, :], n_slices, axis=0)
+
+    # Replace the slice coordinate per box
+    start_mask = np.isclose(vertices[:, slice_idx], start_value)
+    end_mask = ~start_mask
+
+    # Assign low/high bounds efficiently
+    all_boxes[:, start_mask, slice_idx] = low_vals
+    all_boxes[:, end_mask, slice_idx] = high_vals
+
+    # Return as list of (8,3) arrays
+    return [all_boxes[i] for i in range(n_slices)]
 
 
+# def points_inside_bbox(points, bbox_min, bbox_max):
+#     """
+#     Check which points are inside a bounding box.
+
+#     Parameters:
+#     - points: List of 3D points where each point is represented as [x, y, z].
+#     - bbox_min: Minimum coordinates of the bounding box, e.g., [min_x, min_y, min_z].
+#     - bbox_max: Maximum coordinates of the bounding box, e.g., [max_x, max_y, max_z].
+
+#     Returns:
+#     - List of boolean values indicating whether each point is inside the bounding box.
+#     """
+#     return points[np.where(np.all((bbox_min <= points) & (points <= bbox_max), axis=1)==True)], np.where(np.all((bbox_min <= points) & (points <= bbox_max), axis=1)==True)
+
+@njit
 def points_inside_bbox(points, bbox_min, bbox_max):
-    """
-    Check which points are inside a bounding box.
-
-    Parameters:
-    - points: List of 3D points where each point is represented as [x, y, z].
-    - bbox_min: Minimum coordinates of the bounding box, e.g., [min_x, min_y, min_z].
-    - bbox_max: Maximum coordinates of the bounding box, e.g., [max_x, max_y, max_z].
-
-    Returns:
-    - List of boolean values indicating whether each point is inside the bounding box.
-    """
-    return points[np.where(np.all((bbox_min <= points) & (points <= bbox_max), axis=1)==True)], np.where(np.all((bbox_min <= points) & (points <= bbox_max), axis=1)==True)
+    n = points.shape[0]
+    mask = np.empty(n, dtype=np.bool_)
+    for i in range(n):
+        mask[i] = (bbox_min[0] <= points[i,0] <= bbox_max[0] and
+                   bbox_min[1] <= points[i,1] <= bbox_max[1] and
+                   bbox_min[2] <= points[i,2] <= bbox_max[2])
+    return points[mask], np.where(mask)[0]
 
 def organize_coordinates(coordinates):
     left_face = [  coordinates[1], coordinates[0], coordinates[3], coordinates[6]    ]
@@ -223,39 +243,69 @@ def accumulate_slices(bbox_vertices, object_frame_points, face_distances, epsilo
     
     return ibr_ratios, empty_ratios, points_per_slice
 
-def fuse_slices(points_per_slice, ibr_ratios, empty_ratios, theta, thickness, slice_idx, gripper_width): 
-    point_groups = [ [points_per_slice[0]] ] # init to first location of non-empty points and get that idx
-    group_idx = 0
-    empty_hit = False
+# def fuse_slices(points_per_slice, ibr_ratios, empty_ratios, theta, thickness, slice_idx, gripper_width): 
+#     point_groups = [ [points_per_slice[0]] ] # init to first location of non-empty points and get that idx
+#     group_idx = 0
+#     empty_hit = False
     
-    #3. Group Fusion
+#     #3. Group Fusion
     
-    for ratio_idx in range(len(ibr_ratios) - 1):
-        pair_diff = (ibr_ratios[ratio_idx]+empty_ratios[ratio_idx+1]) - (ibr_ratios[ratio_idx + 1]+empty_ratios[ratio_idx+1])
+#     for ratio_idx in range(len(ibr_ratios) - 1):
+#         pair_diff = (ibr_ratios[ratio_idx]+empty_ratios[ratio_idx+1]) - (ibr_ratios[ratio_idx + 1]+empty_ratios[ratio_idx+1])
        
-        if np.abs(pair_diff) >= theta or ( (len(point_groups[group_idx])+1)*thickness > gripper_width  ) or len(points_per_slice[ratio_idx]) == 0: # add to current group if no sharp-change and no exceeding grip and not too small 
+#         if np.abs(pair_diff) >= theta or ( (len(point_groups[group_idx])+1)*thickness > gripper_width  ) or len(points_per_slice[ratio_idx]) == 0: # add to current group if no sharp-change and no exceeding grip and not too small 
             
-            if len(points_per_slice[ratio_idx]) > 0:
-                point_groups[group_idx].append(points_per_slice[ratio_idx])
+#             if len(points_per_slice[ratio_idx]) > 0:
+#                 point_groups[group_idx].append(points_per_slice[ratio_idx])
                 
-                group_idx += 1 
-                point_groups.append([])
-                empty_hit = False
-            elif empty_hit == False:                 
-                empty_hit = True
+#                 group_idx += 1 
+#                 point_groups.append([])
+#                 empty_hit = False
+#             elif empty_hit == False:                 
+#                 empty_hit = True
 
             
-            if ratio_idx < len(ibr_ratios) - 1 and len(points_per_slice[ratio_idx+1]) > 0:
-                point_groups[group_idx].append(points_per_slice[ratio_idx+1])
+#             if ratio_idx < len(ibr_ratios) - 1 and len(points_per_slice[ratio_idx+1]) > 0:
+#                 point_groups[group_idx].append(points_per_slice[ratio_idx+1])
             
-        else: 
-            point_groups[group_idx].append(points_per_slice[ratio_idx])
-            if ratio_idx == len(ibr_ratios) - 1 and len(points_per_slice[ratio_idx+1]) > 0:
-                point_groups[group_idx].append(points_per_slice[ratio_idx+1])
+#         else: 
+#             point_groups[group_idx].append(points_per_slice[ratio_idx])
+#             if ratio_idx == len(ibr_ratios) - 1 and len(points_per_slice[ratio_idx+1]) > 0:
+#                 point_groups[group_idx].append(points_per_slice[ratio_idx+1])
     
    
-    return point_groups
+#     return point_groups
 
+@njit
+def fuse_slices_fast(ibr_ratios, empty_ratios, theta, thickness, gripper_width):
+    n = len(ibr_ratios)
+    group_flags = np.zeros(n, dtype=np.int32)
+    group_idx = 0
+    current_width = 0.0
+
+    for i in range(n - 1):
+        pair_diff = (ibr_ratios[i] + empty_ratios[i+1]) - (ibr_ratios[i+1] + empty_ratios[i+1])
+        sharp_change = abs(pair_diff) >= theta
+        too_wide = current_width + thickness > gripper_width
+
+        if sharp_change or too_wide:
+            group_idx += 1
+            current_width = 0.0
+        else:
+            current_width += thickness
+
+        group_flags[i] = group_idx
+
+    return group_flags
+
+def fuse_slices(points_per_slice, ibr_ratios, empty_ratios, theta, thickness, slice_idx, gripper_width):
+    group_flags = fuse_slices_fast(ibr_ratios, empty_ratios, theta, thickness, gripper_width)
+    point_groups = []
+    for _, group in groupby(zip(group_flags, points_per_slice), key=lambda x: x[0]):
+        pts = [p for _, p in group if len(p) > 0]
+        if pts:
+            point_groups.append(pts)
+    return point_groups
 
 def build_new_cloud_bbox(group, cloud_object):  
     group = list(filter(lambda x: len(x) > 0, group)) 

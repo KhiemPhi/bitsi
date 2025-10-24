@@ -211,7 +211,7 @@ def generate_scene_layout(num_objects, scene_size=2.0):
 
 def create_multi_category_scene(parent_dir, object_categories, scene_size=2.0, 
                                gripper_width=0.13, gripper_height=0.07, epsilon=5e-3,
-                               strength_threshold=0.01, ibr_tolerance=0.02):
+                               strength_threshold=0.001, ibr_tolerance=0.02):
     """
     Create a multi-category scene with objects from different categories.
     
@@ -295,7 +295,7 @@ def create_multi_category_scene(parent_dir, object_categories, scene_size=2.0,
         
         # Build cloud object for the entire scene
         cloud_object = build_cloud_object(scene_pcd, gripper_width, gripper_height)
-        thickness = auto_thickness(cloud_object, scale=0.03)
+        thickness = auto_thickness(cloud_object, scale=0.07)
         print(f"📏 Adaptive thickness: {thickness:.6f}")
         
         # Compute BITSI metrics for the entire scene
@@ -311,7 +311,8 @@ def create_multi_category_scene(parent_dir, object_categories, scene_size=2.0,
         
         # Perform segmentation on the entire scene
         try:
-            root = build_segmentation_tree(points_per_slice_to_use, bitsi_x, bitsi_y, bitsi_z, slice_idx, strength_threshold)
+            root = build_segmentation_tree(points_per_slice_to_use, bitsi_x, bitsi_y, bitsi_z, slice_idx, strength_threshold, max_deg=10)
+            #root = fuse_consecutive_segments(root, ibr_tolerance=0.005)
         except Exception as e:
             breakpoint()
             print(f"❌ Segmentation failed: {e}")
@@ -354,51 +355,6 @@ def visualize_multi_category_scene(scene_pcd, scene_objects, segmentation_result
     show_segmentation : bool
         Whether to show segmentation results
     """
-    if show_individual_objects:
-        # Show individual objects
-        print("\n🎨 Visualizing individual objects...")
-        
-        fig = plt.figure(figsize=(16, 8))
-        ax1 = fig.add_subplot(121, projection="3d")
-        ax1.set_title("Individual Objects in Scene")
-        ax1.set_xlabel("X")
-        ax1.set_ylabel("Y")
-        ax1.set_zlabel("Z")
-        
-        # Plot each object with different colors
-        for i, (scene_obj, object_info) in enumerate(scene_objects):
-            if scene_obj.transformed_pcd is not None:
-                points = np.asarray(scene_obj.transformed_pcd.points)
-                color = plt.cm.get_cmap("tab20", len(scene_objects))(i)[:3]
-                ax1.scatter(points[:, 0], points[:, 1], points[:, 2], 
-                           s=5, color=color, alpha=0.8, label=f"{object_info['object_name']}")
-        
-        ax1.legend()
-        
-        # Show combined scene
-        ax2 = fig.add_subplot(122, projection="3d")
-        ax2.set_title("Combined Scene")
-        ax2.set_xlabel("X")
-        ax2.set_ylabel("Y")
-        ax2.set_zlabel("Z")
-        
-        points = np.asarray(scene_pcd.points)
-        ax2.scatter(points[:, 0], points[:, 1], points[:, 2], s=3, alpha=0.6)
-        
-        # Fix scaling
-        for ax in [ax1, ax2]:
-            all_pts = points
-            max_range = (all_pts.max(axis=0) - all_pts.min(axis=0)).max() / 2.0
-            mid_x = (all_pts[:, 0].max() + all_pts[:, 0].min()) / 2.0
-            mid_y = (all_pts[:, 1].max() + all_pts[:, 1].min()) / 2.0
-            mid_z = (all_pts[:, 2].max() + all_pts[:, 2].min()) / 2.0
-            
-            ax.set_xlim(mid_x - max_range, mid_x + max_range)
-            ax.set_ylim(mid_y - max_range, mid_y + max_range)
-            ax.set_zlim(mid_z - max_range, mid_z + max_range)
-        
-        plt.tight_layout()
-        plt.show()
     
     if show_segmentation and segmentation_results is not None:
         # Show segmentation results
@@ -420,7 +376,7 @@ def main():
     parser.add_argument('--parent_dir', type=str, default='YCBV', 
                        choices=['HANDAL', 'YCBV', 'YCBV-Partial', 'KITTI', 'ShapeNetPart'],
                        help='Dataset directory')
-    parser.add_argument('--objects', type=str, nargs='+', default=['mug', 'hammer', 'flat_screwdriver'],
+    parser.add_argument('--objects', type=str, nargs='+', default=None,
                        help='List of object categories to load')
     parser.add_argument('--num_objects', type=int, default=None,
                        help='Number of random objects to load (if not specified, uses --objects list)')
@@ -440,7 +396,7 @@ def main():
     print(f"📦 Dataset: {args.parent_dir}")
     
     # Determine object categories
-    if args.num_objects is not None:
+    if args.num_objects is not None and args.objects is None:
         # Load random objects
         available_objects = get_available_objects_for_dataset(args.parent_dir)
         if not available_objects:
@@ -479,7 +435,7 @@ def main():
     )
     
     print("\n🎉 Multi-category scene generation completed!")
-    print("📝 Note: No segmentation was performed - objects are loaded as-is")
+    
 
 if __name__ == "__main__":
     main()
