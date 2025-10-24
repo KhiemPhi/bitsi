@@ -349,8 +349,8 @@ def fuse_consecutive_segments(node, ibr_tolerance=0.2):
     node.children = fused_children
     return node
 
-def build_segmentation_tree(points_per_slice_to_use, bitsi_x, bitsi_y, bitsi_z, slice_idx, strength_threshold, max_deg=6):
-    x, y_fit, inflections = bitsi_with_extrema(bitsi_x, bitsi_y, bitsi_z, slice_idx, visualize=True, strength_threshold=strength_threshold, max_deg=max_deg)
+def build_segmentation_tree(points_per_slice_to_use, bitsi_x, bitsi_y, bitsi_z, slice_idx, strength_threshold, max_deg=6, visualize=False):
+    x, y_fit, inflections = bitsi_with_extrema(bitsi_x, bitsi_y, bitsi_z, slice_idx, visualize=visualize, strength_threshold=strength_threshold, max_deg=max_deg)
     x_min, x_max = np.min(x), np.max(x)
     boundaries = [x_min] + inflections.tolist() + [x_max]
 
@@ -533,6 +533,11 @@ def apply_slicing_to_children(root, bitsi_x, bitsi_y, bitsi_z, epsilon=5e-3, thi
         child_bitsi_x, child_bitsi_y, child_bitsi_z, child_slice_idx, child_points_per_slice_x, child_points_per_slice_y, child_points_per_slice_z = bitsi_metric(
             child.cloud_object, epsilon=epsilon, thickness=thickness or auto_thickness(child.cloud_object, scale=0.03)
         )
+        if root.slice_idx == 0:
+            child_slice_idx = 1
+        elif root.slice_idx == 1:
+            child_slice_idx = 0
+        print(child_slice_idx)
         
         # Use the 2nd slice index for this child
         child_points_per_slice = [child_points_per_slice_x, child_points_per_slice_y, child_points_per_slice_z]
@@ -852,6 +857,36 @@ def calculate_iou_metrics(points, part_ids, segmented_leaves):
     
     return best_matches, mean_iou
 
+def rename_segments(root, prefix="segment"):
+    """
+    Rename all segments in the tree with sequential numbers.
+    
+    Parameters
+    ----------
+    root : SegmentNode
+        Root node of the segmentation tree
+    prefix : str, optional
+        Prefix to use for segment names, defaults to "segment"
+        
+    Returns
+    -------
+    root : SegmentNode
+        Root node with renamed segments
+    """
+    def _rename_recursive(node, counter=[0]):
+        # Skip renaming the root node
+        if node.parent is not None:
+            node.name = f"{prefix}_{counter[0]}"
+            counter[0] += 1
+            
+        # Recursively rename children
+        for child in node.children:
+            _rename_recursive(child, counter)
+            
+    _rename_recursive(root)
+    return root
+
+
 def main():
     #np.warnings.filterwarnings('ignore', category=np.VisibleDeprecationWarning)
     
@@ -943,6 +978,9 @@ def main():
     # -------------------------------------------------------------------------
     root = build_segmentation_tree(points_per_slice_to_use, bitsi_x, bitsi_y, bitsi_z, slice_idx, strength_threshold)
     root = fuse_consecutive_segments(root, ibr_tolerance=ibr_tolerance)
+    root = apply_slicing_to_children(root, bitsi_x, bitsi_y, bitsi_z, epsilon=epsilon, thickness=thickness)
+    root = rename_segments(root)
+    
     
     #root.print_tree()
     #fuse_oversegmented_children(root, ibr_tol=0.05, var_tol=0.01) 

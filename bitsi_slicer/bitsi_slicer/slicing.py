@@ -199,6 +199,7 @@ def accumulate_slices(bbox_vertices, object_frame_points, face_distances, epsilo
     ibr_ratios = []
     points_per_slice = []
     empty_ratios = []
+    point_slice_idx = []
     for idx, vertices in enumerate(bbox_vertices):
         
         bbox_min = np.min(vertices, axis=0)
@@ -226,9 +227,11 @@ def accumulate_slices(bbox_vertices, object_frame_points, face_distances, epsilo
         
         total = len(boundary_idx) + len(interior_idx)
         ibr_ratio = len(boundary_idx) / total if total > 0 else 0
+        ibr_ratio = ibr_ratio * empty_ratio
 
         if len(points_inside) > 0:
             points_per_slice.append(points_inside)
+            point_slice_idx.append(points_idx)
             if len(interior_idx) > 0 and len(boundary_idx) <= len(interior_idx):
                 ibr_ratios.append(ibr_ratio)
             elif len(interior_idx) == 0:
@@ -241,7 +244,7 @@ def accumulate_slices(bbox_vertices, object_frame_points, face_distances, epsilo
         
     
     
-    return ibr_ratios, empty_ratios, points_per_slice
+    return ibr_ratios, empty_ratios, points_per_slice, point_slice_idx
 
 # def fuse_slices(points_per_slice, ibr_ratios, empty_ratios, theta, thickness, slice_idx, gripper_width): 
 #     point_groups = [ [points_per_slice[0]] ] # init to first location of non-empty points and get that idx
@@ -434,12 +437,12 @@ def slice_subparts(part, cloud_object, face_distances, uncheck_idx, thickness, e
     face_distances, unit_vec = get_face_distance(faces, object_frame_points, cloud_object)
     sub_slice_bbox_vertices = slice_bbox(vertices, part, thickness=thickness, slice_idx=uncheck_idx) 
     object_frame_points = np.asarray(part.points)   
-    sub_ibr_ratios, empty_ratios, sub_point_groups = accumulate_slices(sub_slice_bbox_vertices, object_frame_points, face_distances, epsilon)
+    sub_ibr_ratios, empty_ratios, sub_point_groups, sub_point_slice_idx = accumulate_slices(sub_slice_bbox_vertices, object_frame_points, face_distances, epsilon)
     sub_point_groups                  = fuse_slices(sub_point_groups, sub_ibr_ratios, empty_ratios,  theta, thickness, slice_idx=uncheck_idx, gripper_width=gripper_length)
    
     sub_parts = refit_bbox(cloud_object, sub_point_groups)
     sub_parts = fuse_consecutive_boxes(sub_parts, cloud_object, slice_idx=uncheck_idx, area_threshold=area_threshold, resolution=resolution)
-    return sub_parts, sub_point_groups
+    return sub_parts, sub_point_groups, sub_point_slice_idx     
 
 def get_empty_ratio(part, resolution=0.01):
     vertices = part.oriented_bounding_box_vertices
@@ -478,17 +481,14 @@ def search_dimesion_slice(cloud_object, gripper_length, ibr_ratio, base_ibr):
     graspable_dim = np.array([cloud_object.x_dim, cloud_object.y_dim, cloud_object.z_dim])
     depth_dim = cloud_object.z_dim
     
-    if ibr_ratio > base_ibr: 
-        print('Bounding Box is Well Approximated')
-        return None, None
+   
+    slice_idx = np.argmax(graspable_dim)
+    if slice_idx == 2: 
+        uncheck_idx = [0,1]
     else:
-        slice_idx = np.argmax(graspable_dim)
-        if slice_idx == 2: 
-            uncheck_idx = [0,1]
-        else:
-            uncheck_idx = [np.int(np.logical_not(np.argmax(graspable_dim)))]
+        uncheck_idx = [np.int(np.logical_not(np.argmax(graspable_dim)))]
+
     
-        
    
     return slice_idx, uncheck_idx
 
@@ -523,28 +523,15 @@ def bitsi_metric (cloud_object, epsilon=1e-3, thickness=0.001, gripper_length=0.
     slice_bbox_vertices_y = slice_bbox(vertices, cloud_object, thickness=thickness, slice_idx=1)
     slice_bbox_vertices_z = slice_bbox(vertices, cloud_object, thickness=thickness, slice_idx=2)
 
-    ibr_ratios_x, _, points_per_slice_x = accumulate_slices(slice_bbox_vertices_x, object_frame_points, face_distances, epsilon)
-    ibr_ratios_y, _, points_per_slice_y = accumulate_slices(slice_bbox_vertices_y, object_frame_points, face_distances, epsilon)
-    ibr_ratios_z, _, points_per_slice_z = accumulate_slices(slice_bbox_vertices_z, object_frame_points, face_distances, epsilon)
+    ibr_ratios_x, _, points_per_slice_x, point_slice_idx_x = accumulate_slices(slice_bbox_vertices_x, object_frame_points, face_distances, epsilon)
+    ibr_ratios_y, _, points_per_slice_y, point_slice_idx_y = accumulate_slices(slice_bbox_vertices_y, object_frame_points, face_distances, epsilon)
+    ibr_ratios_z, _, points_per_slice_z, point_slice_idx_z = accumulate_slices(slice_bbox_vertices_z, object_frame_points, face_distances, epsilon)
     
-    # Apply smoothing to IBR ratios using a Savitzky-Golay filter to reduce noise
-    from scipy.signal import savgol_filter
-
-    # Set filter parameters
-    window_length = min(9, len(ibr_ratios_x) - 1 if len(ibr_ratios_x) % 2 == 0 else len(ibr_ratios_x))  # Must be odd and less than data length
-    poly_order = 3  # Polynomial order for fitting
-
-    # Ensure window length is odd
-    if window_length % 2 == 0:
-        window_length -= 1
+    points_per_slice_x = [cloud_object.original_world_points[idx] for idx in point_slice_idx_x]
+    points_per_slice_y = [cloud_object.original_world_points[idx] for idx in point_slice_idx_y]
+    points_per_slice_z = [cloud_object.original_world_points[idx] for idx in point_slice_idx_z]
     
-    # Apply smoothing if enough data points
-    if len(ibr_ratios_x) > window_length:
-        ibr_ratios_x = savgol_filter(ibr_ratios_x, window_length, poly_order)
-    if len(ibr_ratios_y) > window_length:
-        ibr_ratios_y = savgol_filter(ibr_ratios_y, window_length, poly_order)
-    if len(ibr_ratios_z) > window_length:
-        ibr_ratios_z = savgol_filter(ibr_ratios_z, window_length, poly_order)
+  
 
     return ibr_ratios_x, ibr_ratios_y, ibr_ratios_z, slice_idx, points_per_slice_x, points_per_slice_y, points_per_slice_z
 

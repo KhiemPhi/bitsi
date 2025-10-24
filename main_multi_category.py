@@ -295,7 +295,7 @@ def create_multi_category_scene(parent_dir, object_categories, scene_size=2.0,
         
         # Build cloud object for the entire scene
         cloud_object = build_cloud_object(scene_pcd, gripper_width, gripper_height)
-        thickness = auto_thickness(cloud_object, scale=0.07)
+        thickness = auto_thickness(cloud_object, scale=0.001)
         print(f"📏 Adaptive thickness: {thickness:.6f}")
         
         # Compute BITSI metrics for the entire scene
@@ -311,7 +311,7 @@ def create_multi_category_scene(parent_dir, object_categories, scene_size=2.0,
         
         # Perform segmentation on the entire scene
         try:
-            root = build_segmentation_tree(points_per_slice_to_use, bitsi_x, bitsi_y, bitsi_z, slice_idx, strength_threshold, max_deg=10)
+            root = build_segmentation_tree(points_per_slice_to_use, bitsi_x, bitsi_y, bitsi_z, slice_idx, strength_threshold, max_deg=10, visualize=True)
             #root = fuse_consecutive_segments(root, ibr_tolerance=0.005)
         except Exception as e:
             breakpoint()
