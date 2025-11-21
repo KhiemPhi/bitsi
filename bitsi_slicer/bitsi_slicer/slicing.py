@@ -486,7 +486,7 @@ def search_dimesion_slice(cloud_object, gripper_length, ibr_ratio, base_ibr):
     if slice_idx == 2: 
         uncheck_idx = [0,1]
     else:
-        uncheck_idx = [np.int(np.logical_not(np.argmax(graspable_dim)))]
+        uncheck_idx = [np.int64(np.logical_not(np.argmax(graspable_dim)))]
 
     
    

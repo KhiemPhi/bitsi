@@ -3,18 +3,24 @@ import open3d as o3d
 import sys
 import os
 import numpy as np 
+import matplotlib
+matplotlib.use('Agg')  # Use non-interactive backend for headless servers
 import matplotlib.pyplot as plt
 from bitsi_slicer.bitsi_slicer import slice_object_bbox, bitsi_metric, build_cloud_object, get_overall_ibr_ratio
 from numpy.polynomial import Chebyshev
-from sklearn.cluster import KMeans
+from sklearn.cluster import KMeans, DBSCAN, AgglomerativeClustering
+from sklearn.preprocessing import StandardScaler
 from numpy.polynomial import chebyshev as C
-from sklearn.cluster import DBSCAN
+from scipy.spatial.distance import cdist
+from scipy.cluster.hierarchy import linkage, fcluster
 
 import random
+import json
+from itertools import combinations
 
 
 
-def fit_best_chebyshev(x, y, min_deg=2, max_deg=None, criterion="bic", strength_threshold=0.2):
+def fit_best_chebyshev(x, y, min_deg=3, max_deg=None, criterion="bic", strength_threshold=0.2):
     """
     Fit Chebyshev polynomials of increasing degree and pick the best one
     based on the chosen information criterion ('bic', 'aic', 'aicc', or 'adj_r2').
@@ -82,6 +88,7 @@ def fit_best_chebyshev(x, y, min_deg=2, max_deg=None, criterion="bic", strength_
     degree = best["degree"]
     y_fit = best["y_fit"]
     
+
     
      # --- Compute inflection points directly on given x
     dcoeffs = C.chebder(coeffs)
@@ -92,6 +99,38 @@ def fit_best_chebyshev(x, y, min_deg=2, max_deg=None, criterion="bic", strength_
     sign_change = np.diff(np.sign(ddy))
     inflection_idx = np.where(sign_change != 0)[0]
     inflections = np.int32(inflection_idx)
+
+    # If no inflections found, try best model from another criterion
+    if len(inflections) == 0:
+        tried_criteria = [criterion.lower()]
+        possible_criteria = ["bic", "aic", "aicc", "adj_r2"]
+        for alt_criterion in possible_criteria:
+            if alt_criterion not in tried_criteria and any(m for m in all_models):
+                if alt_criterion in ("bic", "aic", "aicc"):
+                    best_alt = min(all_models, key=lambda m: m[alt_criterion])
+                elif alt_criterion == "adj_r2":
+                    best_alt = max(all_models, key=lambda m: m["adj_r2"])
+                else:
+                    continue
+                alt_ch = best_alt["model"]
+                alt_coeffs = alt_ch.coef
+                alt_degree = best_alt["degree"]
+                alt_y_fit = best_alt["y_fit"]
+                # --- Compute inflection points directly on given x for alt model
+                d_alt_coeffs = C.chebder(alt_coeffs)
+                dd_alt_coeffs = C.chebder(d_alt_coeffs)
+                ddy_alt = C.chebval(x_scaled, dd_alt_coeffs)
+                sign_change_alt = np.diff(np.sign(ddy_alt))
+                inflection_idx_alt = np.where(sign_change_alt != 0)[0]
+                inflections = np.int32(inflection_idx_alt)
+                if len(inflections) > 0:
+                    coeffs = alt_coeffs
+                    degree = alt_degree
+                    y_fit = alt_y_fit
+                    best = best_alt
+                    ddy = ddy_alt
+                    inflection_idx = inflection_idx_alt
+                    break
 
     # --- Compute strength of each inflection ---
     strengths = []
@@ -107,11 +146,12 @@ def fit_best_chebyshev(x, y, min_deg=2, max_deg=None, criterion="bic", strength_
     if len(strengths) > 0:
         strengths = strengths / np.max(strengths)
     
-    # Filter weak inflections
+    
     strong_mask = strengths >= strength_threshold
+
     inflections = inflections[strong_mask]
     strengths = strengths[strong_mask]
-
+   
     # Print results
     print(f"📍 Found {len(inflections)} inflection point(s) with strength threshold {strength_threshold}:")
     for idx, s in zip(inflections, strengths):
@@ -119,7 +159,7 @@ def fit_best_chebyshev(x, y, min_deg=2, max_deg=None, criterion="bic", strength_
     
     return coeffs, degree, y_fit, best, inflections
 
-def visualize_tree_segments(root_node):
+def visualize_tree_segments(root_node, output_dir=None):
     """
     Visualize all child segments of a tree (excluding the root node).
 
@@ -127,6 +167,8 @@ def visualize_tree_segments(root_node):
     ----------
     root_node : SegmentNode
         The root node of the segmentation tree.
+    output_dir : str, optional
+        Directory to save the visualization. If None, displays the plot.
     """
     # Gather all children recursively, excluding root
     def gather_children(node):
@@ -169,9 +211,17 @@ def visualize_tree_segments(root_node):
 
     ax.legend(loc="upper right", fontsize=8)
     plt.tight_layout()
-    plt.show()
     
-def bitsi_with_extrema(bitsi_x, bitsi_y, bitsi_z, dominant_idx, visualize=True, strength_threshold=0.2, max_deg=10):
+    if output_dir:
+        os.makedirs(output_dir, exist_ok=True)
+        output_path = os.path.join(output_dir, "segmented_parts.png")
+        plt.savefig(output_path, dpi=150, bbox_inches='tight')
+        print(f"💾 Saved visualization to {output_path}")
+        plt.close()
+    else:
+        plt.show()
+    
+def bitsi_with_extrema(bitsi_x, bitsi_y, bitsi_z, dominant_idx, visualize=True, strength_threshold=0.2, max_deg=10, output_dir=None):
     # Axis conventions
     axis_names = ["X", "Y", "Z"]
     axis_colors = {"X": "r", "Y": "g", "Z": "b"}
@@ -201,7 +251,15 @@ def bitsi_with_extrema(bitsi_x, bitsi_y, bitsi_z, dominant_idx, visualize=True, 
         plt.ylabel("BITSI Value")
         plt.legend()
         plt.grid(True)
-        plt.show()
+        
+        if output_dir:
+            os.makedirs(output_dir, exist_ok=True)
+            output_path = os.path.join(output_dir, "bitsi_curve.png")
+            plt.savefig(output_path, dpi=150, bbox_inches='tight')
+            print(f"💾 Saved BITSI curve to {output_path}")
+            plt.close()
+        else:
+            plt.show()
     
     return x, y_fit, inflections
 
@@ -349,8 +407,8 @@ def fuse_consecutive_segments(node, ibr_tolerance=0.2):
     node.children = fused_children
     return node
 
-def build_segmentation_tree(points_per_slice_to_use, bitsi_x, bitsi_y, bitsi_z, slice_idx, strength_threshold, max_deg=6, visualize=False):
-    x, y_fit, inflections = bitsi_with_extrema(bitsi_x, bitsi_y, bitsi_z, slice_idx, visualize=visualize, strength_threshold=strength_threshold, max_deg=max_deg)
+def build_segmentation_tree(points_per_slice_to_use, bitsi_x, bitsi_y, bitsi_z, slice_idx, strength_threshold, max_deg=12, visualize=False, output_dir=None):
+    x, y_fit, inflections = bitsi_with_extrema(bitsi_x, bitsi_y, bitsi_z, slice_idx, visualize=visualize, strength_threshold=strength_threshold, max_deg=max_deg, output_dir=output_dir)
     x_min, x_max = np.min(x), np.max(x)
     boundaries = [x_min] + inflections.tolist() + [x_max]
 
@@ -378,10 +436,15 @@ def build_segmentation_tree(points_per_slice_to_use, bitsi_x, bitsi_y, bitsi_z, 
 
 def get_category_mapping():
     """Read the category mapping from synsetoffset2category.txt"""
+    # Get the script directory and construct path relative to project root
+    script_dir = os.path.dirname(os.path.abspath(__file__))
+    project_root = os.path.dirname(script_dir)  # Go up one level from bitsi/ to project root
+    mapping_path = os.path.join(project_root, 'data', 'ShapeNetPart', 'synsetoffset2category.txt')
+    
     category_map = {}
     reverse_map = {}
     
-    with open('/home/khiem/data/ShapeNetPart/synsetoffset2category.txt', 'r') as f:
+    with open(mapping_path, 'r') as f:
         for line in f:
             line = line.strip()
             if line:
@@ -394,99 +457,147 @@ def get_category_mapping():
     return category_map, reverse_map
 
 def get_available_categories():
-    """Get list of all available categories with their IDs"""
+    """Get list of all available categories with their IDs from the training set"""
+    script_dir = os.path.dirname(os.path.abspath(__file__))
+    project_root = os.path.dirname(script_dir)
+    train_file_path = os.path.join(project_root, 'data', 'ShapeNetPart', 'train_test_split', 'shuffled_train_file_list.json')
+    
     category_map, _ = get_category_mapping()
-    available = []
+    available = {}
     
-    for category_id, category_name in category_map.items():
-        category_path = f'/home/khiem/data/ShapeNetPart/{category_id}'
-        if os.path.exists(category_path):
-            files = [f for f in os.listdir(category_path) if f.endswith('.txt')]
-            if files:
-                available.append((category_name, category_id, len(files)))
-    
-    return available
+    # Load training file list
+    try:
+        with open(train_file_path, 'r') as f:
+            train_files = json.load(f)
+        
+        # Count files per category
+        for file_path in train_files:
+            # Format: "shape_data/{category_id}/{object_id}"
+            parts = file_path.split('/')
+            if len(parts) >= 3:
+                category_id = parts[1]
+                if category_id in category_map:
+                    if category_id not in available:
+                        available[category_id] = 0
+                    available[category_id] += 1
+        
+        # Convert to list format
+        result = [(category_map[cat_id], cat_id, count) 
+                 for cat_id, count in available.items()]
+        return result
+    except Exception as e:
+        print(f"Error loading training file list: {e}")
+        return []
 
 def load_point_cloud_shapenetpart(file_path):
     """
     Load point cloud data from a .txt file
-    Expected format: x y z nx ny nz part_id (coordinates + normals + part annotations)
+    Expected format (line-by-line): x y z nx ny nz part_id
+    - Columns 0-2: x, y, z coordinates
+    - Columns 3-5: nx, ny, nz normals
+    - Column 6: part_id (integer, may be stored as float)
     """
     try:
-        # Try to load as space-separated values
+        # Load as space-separated values (handles line-by-line format automatically)
         data = np.loadtxt(file_path)
         
         if data.ndim == 1:
             # Single point, reshape to 2D
             data = data.reshape(1, -1)
         
-        if data.shape[1] >= 3:
-            # Extract coordinates (first 3 columns)
-            points = data[:, :3]
-            
-            # Extract normals if available (columns 3-6)
-            normals = data[:, 3:6] if data.shape[1] >= 6 else None
-            
-            # Extract part annotations if available (column 6)
-            part_ids = data[:, 6].astype(int) if data.shape[1] >= 7 else None
-            
-            return points, normals, part_ids
-        else:
-            print(f"Warning: File {file_path} has unexpected format (only {data.shape[1]} columns)")
+        if data.shape[1] < 3:
+            print(f"Warning: File {file_path} has unexpected format (only {data.shape[1]} columns, need at least 3)")
             return None, None, None
+        
+        # Extract coordinates (first 3 columns: x, y, z)
+        points = data[:, :3]
+        
+        # Extract normals if available (columns 3-5: nx, ny, nz)
+        normals = data[:, 3:6] if data.shape[1] >= 6 else None
+        
+        # Extract part annotations if available (column 6: part_id)
+        # Note: part_id may be stored as float (e.g., 5.000000) but should be integer
+        part_ids = data[:, 6].astype(int) if data.shape[1] >= 7 else None
+        
+        return points, normals, part_ids
             
     except Exception as e:
         print(f"Error loading {file_path}: {e}")
         return None, None, None
 
-def get_random_object(category_name, dataset_path="/home/khiem/data/ShapeNetPart"):
+def get_random_object(category_name=None, split='train'):
     """
-    Get a random object from the specified category
+    Get a random object from the specified category in the training set
     
     Args:
-        category_name (str): Name of the category (e.g., "airplane", "chair", "table")
-        dataset_path (str): Path to the ShapeNetPart dataset
+        category_name (str, optional): Name of the category (e.g., "airplane", "chair", "table")
+                                      If None, selects from all categories
+        split (str): Dataset split to use ('train', 'val', or 'test'). Defaults to 'train'
     
     Returns:
-        tuple: (points, normals, file_path, category_id) or (None, None, None, None) if not found
+        tuple: (points, normals, part_ids, file_path, category_id) or (None, None, None, None, None) if not found
     """
+    # Get the script directory and construct paths relative to project root
+    script_dir = os.path.dirname(os.path.abspath(__file__))
+    project_root = os.path.dirname(script_dir)
+    dataset_path = os.path.join(project_root, 'data', 'ShapeNetPart')
+    
+    # Load the appropriate split file
+    split_file = f'shuffled_{split}_file_list.json'
+    split_file_path = os.path.join(dataset_path, 'train_test_split', split_file)
+    
+    if not os.path.exists(split_file_path):
+        print(f"Split file not found: {split_file_path}")
+        return None, None, None, None, None
+    
+    # Load file list
+    try:
+        with open(split_file_path, 'r') as f:
+            file_list = json.load(f)
+    except Exception as e:
+        print(f"Error loading {split_file_path}: {e}")
+        return None, None, None, None, None
+    
+    # Filter by category if specified
     _, reverse_map = get_category_mapping()
+    category_id = None
     
-    # Normalize category name
-    category_name_lower = category_name.lower().strip()
     
-    # Find category ID
-    if category_name_lower in reverse_map:
-        category_id = reverse_map[category_name_lower]
-    else:
-        print(f"Category '{category_name}' not found.")
-        print("Available categories:")
-        available = get_available_categories()
-        for name, cat_id, count in available:
-            print(f"  - {name} ({cat_id}): {count} files")
-        return None, None, None, None
+    if category_name:
+        category_name_lower = category_name.lower().strip()
+        if category_name_lower in reverse_map:
+            category_id = reverse_map[category_name_lower]
+        else:
+            print(f"Category '{category_name}' not found.")
+            print("Available categories:")
+            available = get_available_categories()
+            for name, cat_id, count in available:
+                print(f"  - {name} ({cat_id}): {count} files")
+            return None, None, None, None, None
     
-    # Get all files in the category
-    category_path = os.path.join(dataset_path, category_id)
-    if not os.path.exists(category_path):
-        print(f"Category directory not found: {category_path}")
-        return None, None, None, None
+    # Filter files by category if specified
+    # Note: JSON format uses "shape_data" as placeholder, actual path is data/ShapeNetPart
+    if category_id:
+        # JSON file format: "shape_data/{category_id}/{object_id}"
+        filtered_files = [f for f in os.listdir(f'../data/ShapeNetPart/{category_id}')]
+    random_file_path_json = random.choice(filtered_files)
+    # Construct actual file path: data/ShapeNetPart/{category_id}/{object_id}.txt
+    full_file_path = os.path.join(dataset_path, category_id, random_file_path_json)
     
-    files = [f for f in os.listdir(category_path) if f.endswith('.txt')]
-    if not files:
-        print(f"No .txt files found in {category_path}")
-        return None, None, None, None
     
-    # Select random file
-    random_file = random.choice(files)
-    file_path = os.path.join(category_path, random_file)
+    if not os.path.exists(full_file_path):
+        print(f"File not found: {full_file_path}")
+        return None, None, None, None, None
     
     # Load the point cloud
-    points, normals, part_ids = load_point_cloud_shapenetpart(file_path)
+    points, normals, part_ids = load_point_cloud_shapenetpart(full_file_path)
     
     if points is not None:
-        print(f"Loaded random {category_name} object:")
-        print(f"  File: {category_id}/{random_file}")
+        category_map, _ = get_category_mapping()
+        
+        category_display_name = category_map.get(category_id)
+        print(f"Loaded random {category_display_name} object from {split} set:")
+        #print(f"  File: {file_category_id}/{object_id}.txt")
         print(f"  Points: {len(points)}")
         print(f"  Has normals: {normals is not None}")
         print(f"  Has part annotations: {part_ids is not None}")
@@ -495,7 +606,7 @@ def get_random_object(category_name, dataset_path="/home/khiem/data/ShapeNetPart
             print(f"  Parts: {sorted(unique_parts)}")
         print(f"  Bounding box: [{points.min(axis=0)}] to [{points.max(axis=0)}]")
         
-        return points, normals, part_ids, f"{category_id}/{random_file}", category_id
+        return points, normals, part_ids, full_file_path, category_id
     else:
         return None, None, None, None, None
 
@@ -544,12 +655,15 @@ def apply_slicing_to_children(root, bitsi_x, bitsi_y, bitsi_z, epsilon=5e-3, thi
         child_points_per_slice_to_use = child_points_per_slice[child_slice_idx]
         
         # Apply segmentation to this child
-        child_segments = build_segmentation_tree(
-            child_points_per_slice_to_use, 
-            child_bitsi_x, child_bitsi_y, child_bitsi_z, 
-            child_slice_idx, 
-            strength_threshold=0.01
-        )
+        
+        if len(child_points_per_slice_to_use) > 200:
+            child_segments = build_segmentation_tree(
+                child_points_per_slice_to_use, 
+                child_bitsi_x, child_bitsi_y, child_bitsi_z, 
+                child_slice_idx, 
+                strength_threshold=0.01,
+                visualize=False
+            )
         
         # Add the child's children as new children of root
         for grandchild in child_segments.children:
@@ -561,7 +675,7 @@ def apply_slicing_to_children(root, bitsi_x, bitsi_y, bitsi_z, epsilon=5e-3, thi
     root.children = new_children
     return root
 
-def visualize_shapepart_comparison(root_node, points, part_ids, parent_dir):
+def visualize_shapepart_comparison(root_node, points, part_ids, parent_dir, output_dir=None):
     """
     Visualize ShapeNetPart ground truth vs segmented parts side by side and calculate IoU.
     
@@ -575,6 +689,8 @@ def visualize_shapepart_comparison(root_node, points, part_ids, parent_dir):
         Ground truth part IDs for each point
     parent_dir : str
         Parent directory to determine if this is ShapeNetPart
+    output_dir : str, optional
+        Directory to save the visualization. If None, displays the plot.
     """
     if parent_dir != 'ShapeNetPart':
         print("⚠️ This comparison is only available for ShapeNetPart dataset")
@@ -650,15 +766,26 @@ def visualize_shapepart_comparison(root_node, points, part_ids, parent_dir):
         ax.legend(loc="upper right", fontsize=8)
     
     plt.tight_layout()
-    plt.show()
+    
+    if output_dir:
+        os.makedirs(output_dir, exist_ok=True)
+        output_path = os.path.join(output_dir, "shapepart_comparison.png")
+        plt.savefig(output_path, dpi=150, bbox_inches='tight')
+        print(f"💾 Saved ShapeNetPart comparison to {output_path}")
+        plt.close()
+    else:
+        plt.show()
     
     # Calculate IoU between ground truth and segmented parts
-    calculate_iou_metrics(points, part_ids, segmented_leaves)
+    calculate_iou_metrics(points, part_ids, segmented_leaves, output_dir=output_dir)
+    
+    # Unsupervised clustering-based fusion
+    calculate_unsupervised_clustering(points, part_ids, segmented_leaves, output_dir=output_dir)
 
-def calculate_iou_metrics(points, part_ids, segmented_leaves):
+def calculate_iou_metrics(points, part_ids, segmented_leaves, output_dir=None):
     """
     Calculate IoU metrics between ground truth and segmented parts.
-    Fuses adjacent slices to maximize IoU.
+    Finds best non-overlapping alignment by fusing segmented parts to match GT part count.
     
     Parameters
     ----------
@@ -668,194 +795,561 @@ def calculate_iou_metrics(points, part_ids, segmented_leaves):
         Ground truth part IDs
     segmented_leaves : list
         List of segmented leaf nodes
+    output_dir : str, optional
+        Directory to save the alignment visualization
     """
-    print("\n📊 IoU Analysis (with slice fusion):")
+    print("\n📊 IoU Analysis (optimal non-overlapping alignment):")
     print("=" * 50)
+    
+    # Count unique parts in ground truth
+    unique_gt_parts = np.unique(part_ids)
+    num_gt_parts = len(unique_gt_parts)
+    print(f"🔢 Number of unique GT parts: {num_gt_parts}")
+    print(f"🔢 Number of segmented parts: {len(segmented_leaves)}")
     
     # Create point-to-segment mapping for segmented parts
     seg_point_to_part = {}
+    seg_part_points = {}  # Map segment index to set of point indices
     for i, leaf in enumerate(segmented_leaves):
         if len(leaf.points) == 0:
             continue
+        seg_part_points[i] = set()
         for point in leaf.points:
             # Find closest point in original point cloud
             distances = np.linalg.norm(points - point, axis=1)
             closest_idx = np.argmin(distances)
             seg_point_to_part[closest_idx] = i
+            seg_part_points[i].add(closest_idx)
     
-    # Calculate IoU for each ground truth part with fusion
-    unique_gt_parts = np.unique(part_ids)
-    best_matches = {}
+    # Calculate IoU matrix: GT parts x Segmented parts (or combinations)
+    def calculate_iou_for_combination(gt_part_id, seg_combination):
+        """Calculate IoU between a GT part and a combination of segmented parts"""
+        gt_mask = part_ids == gt_part_id
+        gt_indices = set(np.where(gt_mask)[0])
+        
+        # Get all points in the segmented combination
+        seg_indices = set()
+        for seg_idx in seg_combination:
+            if seg_idx in seg_part_points:
+                seg_indices.update(seg_part_points[seg_idx])
+        
+        intersection = len(gt_indices & seg_indices)
+        union = len(gt_indices | seg_indices)
+        iou = intersection / union if union > 0 else 0.0
+        return iou, intersection, union
     
+    # Find best non-overlapping alignment using greedy matching
+    # We want to match each GT part to a non-overlapping combination of segmented parts
+    used_segments = set()
+    alignment = {}  # Maps GT part ID to (seg_combination, iou)
+    
+    # For each GT part, find the best matching combination that doesn't overlap with already used segments
     for gt_part_id in unique_gt_parts:
         gt_mask = part_ids == gt_part_id
-        gt_indices = np.where(gt_mask)[0]
+        gt_indices = set(np.where(gt_mask)[0])
         
-        print(f"\n🔍 Analyzing GT Part {int(gt_part_id)} ({len(gt_indices)} points):")
-        
-        # Find which segmented parts overlap with this ground truth part
-        seg_part_overlaps = {}
+        # Find which segmented parts overlap with this GT part
+        overlapping_segments = set()
         for gt_idx in gt_indices:
             if gt_idx in seg_point_to_part:
-                seg_part = seg_point_to_part[gt_idx]
-                if seg_part not in seg_part_overlaps:
-                    seg_part_overlaps[seg_part] = 0
-                seg_part_overlaps[seg_part] += 1
+                overlapping_segments.add(seg_point_to_part[gt_idx])
         
-        if not seg_part_overlaps:
-            print(f"  ⚠️ No overlap with any segmented parts")
-            best_matches[gt_part_id] = (None, 0.0)
+        if not overlapping_segments:
+            alignment[gt_part_id] = (None, 0.0)
             continue
         
-        # Try different combinations of segmented parts (fusion)
-        best_iou = 0
+        # Try all possible combinations of overlapping segments (excluding already used ones)
+        available_segments = [s for s in overlapping_segments if s not in used_segments]
+        
+        if not available_segments:
+            # All overlapping segments are already used, skip this GT part
+            alignment[gt_part_id] = (None, 0.0)
+            continue
+        
+        best_iou = 0.0
         best_combination = None
-        best_combination_type = ""
         
-        # 1. Try individual parts
-        for seg_part, overlap_count in seg_part_overlaps.items():
-            seg_mask = np.array([i in seg_point_to_part and seg_point_to_part[i] == seg_part 
-                               for i in range(len(points))])
-            seg_indices = np.where(seg_mask)[0]
-            
-            intersection = overlap_count
-            union = len(gt_indices) + len(seg_indices) - intersection
-            iou = intersection / union if union > 0 else 0
-            
-            if iou > best_iou:
-                best_iou = iou
-                best_combination = [seg_part]
-                best_combination_type = "single"
-        
-        # 2. Try pairs of adjacent parts
-        overlapping_parts = list(seg_part_overlaps.keys())
-        for i in range(len(overlapping_parts)):
-            for j in range(i + 1, len(overlapping_parts)):
-                part1, part2 = overlapping_parts[i], overlapping_parts[j]
+        # Try all combinations of available segments (up to reasonable size)
+        max_combination_size = min(4, len(available_segments))
+        for combo_size in range(1, max_combination_size + 1):
+            for combo in combinations(available_segments, combo_size):
+                # Check if this combination overlaps with used segments
+                combo_set = set(combo)
+                if combo_set & used_segments:
+                    continue
                 
-                # Check if parts are adjacent (have overlapping points)
-                seg_mask1 = np.array([i in seg_point_to_part and seg_point_to_part[i] == part1 
-                                    for i in range(len(points))])
-                seg_mask2 = np.array([i in seg_point_to_part and seg_point_to_part[i] == part2 
-                                    for i in range(len(points))])
-                
-                # Fuse the two parts
-                fused_mask = seg_mask1 | seg_mask2
-                fused_indices = np.where(fused_mask)[0]
-                
-                # Calculate overlap with fused part
-                fused_overlap = 0
-                for gt_idx in gt_indices:
-                    if gt_idx in seg_point_to_part and seg_point_to_part[gt_idx] in [part1, part2]:
-                        fused_overlap += 1
-                
-                intersection = fused_overlap
-                union = len(gt_indices) + len(fused_indices) - intersection
-                iou = intersection / union if union > 0 else 0
-                
+                iou, _, _ = calculate_iou_for_combination(gt_part_id, combo)
                 if iou > best_iou:
                     best_iou = iou
-                    best_combination = [part1, part2]
-                    best_combination_type = "pair"
+                    best_combination = list(combo)
         
-        # 3. Try triplets of parts
-        for i in range(len(overlapping_parts)):
-            for j in range(i + 1, len(overlapping_parts)):
-                for k in range(j + 1, len(overlapping_parts)):
-                    part1, part2, part3 = overlapping_parts[i], overlapping_parts[j], overlapping_parts[k]
-                    
-                    # Fuse the three parts
-                    seg_mask1 = np.array([i in seg_point_to_part and seg_point_to_part[i] == part1 
-                                        for i in range(len(points))])
-                    seg_mask2 = np.array([i in seg_point_to_part and seg_point_to_part[i] == part2 
-                                        for i in range(len(points))])
-                    seg_mask3 = np.array([i in seg_point_to_part and seg_point_to_part[i] == part3 
-                                        for i in range(len(points))])
-                    
-                    fused_mask = seg_mask1 | seg_mask2 | seg_mask3
-                    fused_indices = np.where(fused_mask)[0]
-                    
-                    # Calculate overlap with fused part
-                    fused_overlap = 0
-                    for gt_idx in gt_indices:
-                        if gt_idx in seg_point_to_part and seg_point_to_part[gt_idx] in [part1, part2, part3]:
-                            fused_overlap += 1
-                    
-                    intersection = fused_overlap
-                    union = len(gt_indices) + len(fused_indices) - intersection
-                    iou = intersection / union if union > 0 else 0
-                    
-                    if iou > best_iou:
-                        best_iou = iou
-                        best_combination = [part1, part2, part3]
-                        best_combination_type = "triplet"
+        if best_combination:
+            alignment[gt_part_id] = (best_combination, best_iou)
+            used_segments.update(best_combination)
+            print(f"  ✅ GT Part {int(gt_part_id)} → Segments {best_combination} (IoU: {best_iou:.3f})")
+        else:
+            alignment[gt_part_id] = (None, 0.0)
+            print(f"  ⚠️ GT Part {int(gt_part_id)} → No match found")
+    
+    # Calculate overall metrics
+    valid_ious = [iou for _, (_, iou) in alignment.items() if iou > 0]
+    mean_iou = np.mean(valid_ious) if valid_ious else 0.0
+    
+    print(f"\n📈 Overall Mean IoU: {mean_iou:.3f}")
+    print(f"🎯 Matched parts: {len(valid_ious)}/{num_gt_parts}")
+    print(f"🎯 Good matches (IoU > 0.5): {sum(1 for _, (_, iou) in alignment.items() if iou > 0.5)}/{num_gt_parts}")
+    
+    # Create visualization of the alignment
+    if output_dir:
+        visualize_alignment(points, part_ids, segmented_leaves, alignment, output_dir)
+    
+    return alignment, mean_iou
+
+def visualize_alignment(points, part_ids, segmented_leaves, alignment, output_dir):
+    """
+    Visualize the optimal alignment between GT parts and fused segmented parts.
+    
+    Parameters
+    ----------
+    points : numpy array
+        Original point cloud points
+    part_ids : numpy array
+        Ground truth part IDs
+    segmented_leaves : list
+        List of segmented leaf nodes
+    alignment : dict
+        Mapping from GT part ID to (seg_combination, iou)
+    output_dir : str
+        Directory to save the visualization
+    """
+    unique_gt_parts = np.unique(part_ids)
+    
+    # Create figure with side-by-side comparison
+    fig = plt.figure(figsize=(20, 10))
+    
+    # Left: Ground Truth
+    ax1 = fig.add_subplot(131, projection="3d")
+    ax1.set_title("Ground Truth Parts", fontsize=14, fontweight='bold')
+    ax1.set_xlabel("X")
+    ax1.set_ylabel("Y")
+    ax1.set_zlabel("Z")
+    
+    # Right: Aligned Segmented Parts (fused)
+    ax2 = fig.add_subplot(132, projection="3d")
+    ax2.set_title("Aligned Segmented Parts (Fused)", fontsize=14, fontweight='bold')
+    ax2.set_xlabel("X")
+    ax2.set_ylabel("Y")
+    ax2.set_zlabel("Z")
+    
+    # Bottom: IoU Scores
+    ax3 = fig.add_subplot(133)
+    ax3.set_title("IoU Scores per Part", fontsize=14, fontweight='bold')
+    ax3.set_xlabel("Ground Truth Part ID")
+    ax3.set_ylabel("IoU Score")
+    ax3.grid(True, alpha=0.3)
+    
+    # Plot ground truth parts
+    gt_colors = plt.cm.get_cmap("tab20", len(unique_gt_parts))
+    for i, gt_part_id in enumerate(unique_gt_parts):
+        mask = part_ids == gt_part_id
+        part_points = points[mask]
+        if len(part_points) > 0:
+            color = gt_colors(i)[:3]
+            ax1.scatter(part_points[:, 0], part_points[:, 1], part_points[:, 2], 
+                       s=5, color=color, alpha=0.8, label=f"Part {int(gt_part_id)}")
+    
+    # Plot aligned segmented parts (fused)
+    seg_colors = plt.cm.get_cmap("tab20", len(unique_gt_parts))
+    iou_scores = []
+    part_labels = []
+    
+    for i, gt_part_id in enumerate(unique_gt_parts):
+        seg_combination, iou = alignment.get(gt_part_id, (None, 0.0))
+        iou_scores.append(iou)
+        part_labels.append(f"P{int(gt_part_id)}")
         
-        # 4. Try all overlapping parts fused together
-        if len(overlapping_parts) > 3:
-            # Fuse all overlapping parts
-            fused_mask = np.zeros(len(points), dtype=bool)
-            for part in overlapping_parts:
-                part_mask = np.array([i in seg_point_to_part and seg_point_to_part[i] == part 
-                                    for i in range(len(points))])
-                fused_mask |= part_mask
+        if seg_combination:
+            # Fuse the segmented parts
+            fused_points = []
+            for seg_idx in seg_combination:
+                if seg_idx < len(segmented_leaves) and len(segmented_leaves[seg_idx].points) > 0:
+                    fused_points.append(np.asarray(segmented_leaves[seg_idx].points))
             
-            fused_indices = np.where(fused_mask)[0]
+            if fused_points:
+                fused_points = np.vstack(fused_points)
+                color = seg_colors(i)[:3]
+                ax2.scatter(fused_points[:, 0], fused_points[:, 1], fused_points[:, 2], 
+                           s=5, color=color, alpha=0.8, 
+                           label=f"P{int(gt_part_id)} (IoU: {iou:.3f})")
+    
+    # Plot IoU scores
+    bars = ax3.bar(range(len(unique_gt_parts)), iou_scores, 
+                   color=[seg_colors(i)[:3] for i in range(len(unique_gt_parts))], alpha=0.7)
+    ax3.set_xticks(range(len(unique_gt_parts)))
+    ax3.set_xticklabels(part_labels, rotation=45, ha='right')
+    ax3.set_ylim([0, 1.1])
+    ax3.axhline(y=0.5, color='r', linestyle='--', alpha=0.5, label='IoU = 0.5')
+    ax3.legend()
+    
+    # Add IoU values on bars
+    for i, (bar, iou) in enumerate(zip(bars, iou_scores)):
+        height = bar.get_height()
+        ax3.text(bar.get_x() + bar.get_width()/2., height + 0.02,
+                f'{iou:.3f}', ha='center', va='bottom', fontsize=9)
+    
+    # Fix scaling for 3D plots
+    all_pts = np.vstack([points] + [np.asarray(n.points) for n in segmented_leaves if len(n.points) > 0])
+    max_range = (all_pts.max(axis=0) - all_pts.min(axis=0)).max() / 2.0
+    mid_x = (all_pts[:, 0].max() + all_pts[:, 0].min()) / 2.0
+    mid_y = (all_pts[:, 1].max() + all_pts[:, 1].min()) / 2.0
+    mid_z = (all_pts[:, 2].max() + all_pts[:, 2].min()) / 2.0
+    
+    for ax in [ax1, ax2]:
+        ax.set_xlim(mid_x - max_range, mid_x + max_range)
+        ax.set_ylim(mid_y - max_range, mid_y + max_range)
+        ax.set_zlim(mid_z - max_range, mid_z + max_range)
+        ax.legend(loc="upper right", fontsize=8)
+    
+    plt.tight_layout()
+    
+    # Save the visualization
+    os.makedirs(output_dir, exist_ok=True)
+    output_path = os.path.join(output_dir, "iou_alignment.png")
+    plt.savefig(output_path, dpi=150, bbox_inches='tight')
+    print(f"💾 Saved IoU alignment visualization to {output_path}")
+    plt.close()
+
+def calculate_unsupervised_clustering(points, part_ids, segmented_leaves, output_dir=None):
+    """
+    Unsupervised clustering-based fusion of segmented parts using hierarchical clustering.
+    Uses rich geometric features and Ward linkage for optimal clustering.
+    K is set to the number of unique parts in ground truth.
+    
+    Features extracted per segment:
+    - Centroid (3D position)
+    - Bounding box size and volume
+    - Point count
+    - IBR ratio (graspability metric)
+    - Principal direction (orientation)
+    - Compactness (density)
+    
+    Parameters
+    ----------
+    points : numpy array
+        Original point cloud points
+    part_ids : numpy array
+        Ground truth part IDs (used only to determine K)
+    segmented_leaves : list
+        List of segmented leaf nodes
+    output_dir : str, optional
+        Directory to save the clustering visualization
+    """
+    print("\n🔬 Unsupervised Clustering Analysis (Hierarchical Clustering):")
+    print("=" * 50)
+    
+    # Count unique parts in ground truth to determine K
+    unique_gt_parts = np.unique(part_ids)
+    num_gt_parts = len(unique_gt_parts)
+    K = num_gt_parts
+    
+    print(f"🔢 Number of unique GT parts (K): {K}")
+    print(f"🔢 Number of segmented parts to cluster: {len(segmented_leaves)}")
+    
+    # Filter out empty segments
+    valid_segments = [(i, leaf) for i, leaf in enumerate(segmented_leaves) if len(leaf.points) > 0]
+    
+    if len(valid_segments) == 0:
+        print("⚠️ No valid segments to cluster")
+        return None, None
+    
+    if len(valid_segments) < K:
+        print(f"⚠️ Warning: Only {len(valid_segments)} segments available, but K={K}. Using K={len(valid_segments)}")
+        K = len(valid_segments)
+    
+    # Extract rich features for each segment
+    segment_features = []
+    segment_indices = []
+    segment_centroids = []
+    segment_bboxes = []
+    
+    for seg_idx, leaf in valid_segments:
+        seg_points = np.asarray(leaf.points)
+        
+        # 1. Centroid (3D position)
+        centroid = np.mean(seg_points, axis=0)
+        segment_centroids.append(centroid)
+        
+        # 2. Size features
+        num_points = len(seg_points)
+        bbox_min = np.min(seg_points, axis=0)
+        bbox_max = np.max(seg_points, axis=0)
+        bbox_size = bbox_max - bbox_min
+        bbox_volume = np.prod(bbox_size)
+        segment_bboxes.append((bbox_min, bbox_max))
+        
+        # 3. IBR ratio (graspability metric)
+        ibr_ratio = leaf.ibr_ratio if hasattr(leaf, 'ibr_ratio') else 0.0
+        
+        # 4. Principal direction (first principal component)
+        if len(seg_points) > 3:
+            centered = seg_points - centroid
+            cov = np.cov(centered.T)
+            eigenvals, eigenvecs = np.linalg.eigh(cov)
+            principal_dir = eigenvecs[:, -1]  # Largest eigenvector
+        else:
+            principal_dir = np.array([0, 0, 1])
+        
+        # 5. Compactness (ratio of volume to bounding box volume)
+        # Approximate as: points per unit volume
+        compactness = num_points / (bbox_volume + 1e-10)
+        
+        # Combine all features
+        features = np.concatenate([
+            centroid,                    # 3D: position
+            bbox_size,                   # 3D: size
+            [bbox_volume],               # 1D: volume
+            [num_points],                # 1D: point count
+            [ibr_ratio],                 # 1D: graspability
+            principal_dir,               # 3D: orientation
+            [compactness]                # 1D: density
+        ])
+        
+        segment_features.append(features)
+        segment_indices.append(seg_idx)
+    
+    segment_features = np.array(segment_features)
+    segment_centroids = np.array(segment_centroids)
+    
+    # Normalize features for better clustering
+    scaler = StandardScaler()
+    segment_features_normalized = scaler.fit_transform(segment_features)
+    
+    # Compute spatial adjacency matrix (distance between segment centroids)
+    centroid_distances = cdist(segment_centroids, segment_centroids)
+    median_distance = np.median(centroid_distances[centroid_distances > 0])
+    
+    # Adaptive clustering method selection
+    print(f"📐 Median inter-segment distance: {median_distance:.4f}")
+    
+    # Clustering Method: Hierarchical Clustering with Ward Linkage
+    # This method works well for spatial data because:
+    # 1. Ward linkage minimizes within-cluster variance
+    # 2. It naturally handles clusters of different sizes
+    # 3. It respects the feature space structure
+    # 
+    # Alternative methods that could be tried:
+    # - DBSCAN: Good for density-based clustering, but requires tuning eps parameter
+    #   dbscan = DBSCAN(eps=median_distance * 0.5, min_samples=1)
+    #   cluster_labels = dbscan.fit_predict(segment_features_normalized)
+    #
+    # - K-means: Simple but assumes spherical clusters
+    #   kmeans = KMeans(n_clusters=K, random_state=42, n_init=10)
+    #   cluster_labels = kmeans.fit_predict(segment_features_normalized)
+    #
+    # - Agglomerative with different linkage: 'complete' or 'average'
+    #   agg = AgglomerativeClustering(n_clusters=K, linkage='complete')
+    #   cluster_labels = agg.fit_predict(segment_features_normalized)
+    
+    print(f"🔬 Using Hierarchical Clustering (Ward linkage)...")
+    
+    # Compute linkage matrix
+    linkage_matrix = linkage(segment_features_normalized, method='ward')
+    cluster_labels = fcluster(linkage_matrix, K, criterion='maxclust')
+    
+    # Adjust cluster IDs to start from 0
+    cluster_labels = cluster_labels - 1
+    
+    # If hierarchical clustering produces fewer clusters, use K-means as fallback
+    num_clusters_found = len(np.unique(cluster_labels))
+    if num_clusters_found < K:
+        print(f"⚠️ Hierarchical clustering found {num_clusters_found} clusters, using K-means with K={K}")
+        kmeans = KMeans(n_clusters=K, random_state=42, n_init=10)
+        cluster_labels = kmeans.fit_predict(segment_features_normalized)
+    
+    # Group segments by cluster
+    clusters = {}
+    for i, (seg_idx, leaf) in enumerate(valid_segments):
+        cluster_id = cluster_labels[i]
+        if cluster_id not in clusters:
+            clusters[cluster_id] = []
+        clusters[cluster_id].append(seg_idx)
+    
+    print(f"\n📊 Clustering Results:")
+    for cluster_id in sorted(clusters.keys()):
+        print(f"  Cluster {cluster_id}: {len(clusters[cluster_id])} segments {clusters[cluster_id]}")
+    
+    # Create point-to-cluster mapping
+    seg_point_to_cluster = {}
+    seg_idx_to_cluster = {}  # Map original segment index to cluster ID
+    for i, (seg_idx, leaf) in enumerate(valid_segments):
+        cluster_id = cluster_labels[i]
+        seg_idx_to_cluster[seg_idx] = cluster_id
+        
+        for point in leaf.points:
+            # Find closest point in original point cloud
+            distances = np.linalg.norm(points - point, axis=1)
+            closest_idx = np.argmin(distances)
+            seg_point_to_cluster[closest_idx] = cluster_id
+    
+    # Calculate IoU for each cluster against GT parts
+    cluster_ious = {}
+    num_clusters_found = len(np.unique(cluster_labels))
+    for cluster_id in range(num_clusters_found):
+        cluster_mask = np.array([i in seg_point_to_cluster and seg_point_to_cluster[i] == cluster_id 
+                                for i in range(len(points))])
+        cluster_indices = set(np.where(cluster_mask)[0])
+        
+        best_iou = 0.0
+        best_gt_part = None
+        
+        for gt_part_id in unique_gt_parts:
+            gt_mask = part_ids == gt_part_id
+            gt_indices = set(np.where(gt_mask)[0])
             
-            # Calculate overlap with all fused parts
-            fused_overlap = 0
-            for gt_idx in gt_indices:
-                if gt_idx in seg_point_to_part and seg_point_to_part[gt_idx] in overlapping_parts:
-                    fused_overlap += 1
-            
-            intersection = fused_overlap
-            union = len(gt_indices) + len(fused_indices) - intersection
-            iou = intersection / union if union > 0 else 0
+            intersection = len(gt_indices & cluster_indices)
+            union = len(gt_indices | cluster_indices)
+            iou = intersection / union if union > 0 else 0.0
             
             if iou > best_iou:
                 best_iou = iou
-                best_combination = overlapping_parts
-                best_combination_type = "all_fused"
+                best_gt_part = gt_part_id
         
-        best_matches[gt_part_id] = (best_combination, best_iou)
-        
-        if best_combination:
-            print(f"  ✅ Best IoU = {best_iou:.3f} ({best_combination_type})")
-            print(f"     Combination: {best_combination}")
-        else:
-            print(f"  ❌ No valid combination found")
+        cluster_ious[cluster_id] = (best_gt_part, best_iou)
+        print(f"  Cluster {cluster_id} → GT Part {int(best_gt_part) if best_gt_part is not None else 'None'} (IoU: {best_iou:.3f})")
     
     # Calculate overall metrics
-    valid_matches = [iou for _, (_, iou) in best_matches.items() if iou > 0]
-    mean_iou = np.mean(valid_matches) if valid_matches else 0
+    valid_ious = [iou for _, (_, iou) in cluster_ious.items() if iou > 0]
+    mean_iou = np.mean(valid_ious) if valid_ious else 0.0
     
+    num_clusters_found = len(clusters)
     print(f"\n📈 Overall Mean IoU: {mean_iou:.3f}")
+    print(f"🎯 Good matches (IoU > 0.5): {sum(1 for _, (_, iou) in cluster_ious.items() if iou > 0.5)}/{num_clusters_found}")
     
-    # Count how many GT parts have good matches (IoU > 0.5)
-    good_matches = sum(1 for _, (_, iou) in best_matches.items() if iou > 0.5)
-    print(f"🎯 Good matches (IoU > 0.5): {good_matches}/{len(unique_gt_parts)}")
+    # Create visualization
+    if output_dir:
+        visualize_clustering(points, part_ids, segmented_leaves, clusters, cluster_ious, output_dir)
     
-    # Show fusion statistics
-    fusion_types = {}
-    for _, (combination, iou) in best_matches.items():
-        if combination:
-            if len(combination) == 1:
-                fusion_type = "single"
-            elif len(combination) == 2:
-                fusion_type = "pair"
-            elif len(combination) == 3:
-                fusion_type = "triplet"
-            else:
-                fusion_type = "multi"
-            
-            if fusion_type not in fusion_types:
-                fusion_types[fusion_type] = 0
-            fusion_types[fusion_type] += 1
     
-    print(f"\n🔧 Fusion Statistics:")
-    for fusion_type, count in fusion_types.items():
-        print(f"  {fusion_type.capitalize()}: {count} parts")
+    return clusters, cluster_ious
+
+def visualize_clustering(points, part_ids, segmented_leaves, clusters, cluster_ious, output_dir):
+    """
+    Visualize the K-means clustering results.
     
-    return best_matches, mean_iou
+    Parameters
+    ----------
+    points : numpy array
+        Original point cloud points
+    part_ids : numpy array
+        Ground truth part IDs
+    segmented_leaves : list
+        List of segmented leaf nodes
+    clusters : dict
+        Mapping from cluster_id to list of segment indices
+    cluster_ious : dict
+        Mapping from cluster_id to (best_gt_part, iou)
+    output_dir : str
+        Directory to save the visualization
+    """
+    unique_gt_parts = np.unique(part_ids)
+    K = len(clusters)
+    
+    # Create figure with side-by-side comparison
+    fig = plt.figure(figsize=(20, 10))
+    
+    # Left: Ground Truth
+    ax1 = fig.add_subplot(131, projection="3d")
+    ax1.set_title("Ground Truth Parts", fontsize=14, fontweight='bold')
+    ax1.set_xlabel("X")
+    ax1.set_ylabel("Y")
+    ax1.set_zlabel("Z")
+    
+    # Middle: Clustered Segmented Parts (fused)
+    ax2 = fig.add_subplot(132, projection="3d")
+    ax2.set_title(f"Hierarchical Clustered Parts (K={K})", fontsize=14, fontweight='bold')
+    ax2.set_xlabel("X")
+    ax2.set_ylabel("Y")
+    ax2.set_zlabel("Z")
+    
+    # Right: IoU Scores
+    ax3 = fig.add_subplot(133)
+    ax3.set_title("IoU Scores per Cluster", fontsize=14, fontweight='bold')
+    ax3.set_xlabel("Cluster ID")
+    ax3.set_ylabel("IoU Score")
+    ax3.grid(True, alpha=0.3)
+    
+    # Plot ground truth parts
+    gt_colors = plt.cm.get_cmap("tab20", len(unique_gt_parts))
+    for i, gt_part_id in enumerate(unique_gt_parts):
+        mask = part_ids == gt_part_id
+        part_points = points[mask]
+        if len(part_points) > 0:
+            color = gt_colors(i)[:3]
+            ax1.scatter(part_points[:, 0], part_points[:, 1], part_points[:, 2], 
+                       s=5, color=color, alpha=0.8, label=f"Part {int(gt_part_id)}")
+    
+    # Plot clustered segmented parts (fused)
+    cluster_colors = plt.cm.get_cmap("tab20", K)
+    iou_scores = []
+    cluster_labels = []
+    
+    for cluster_id in sorted(clusters.keys()):
+        best_gt_part, iou = cluster_ious.get(cluster_id, (None, 0.0))
+        iou_scores.append(iou)
+        cluster_labels.append(f"C{cluster_id}")
+        
+        # Fuse all segments in this cluster
+        fused_points = []
+        for seg_idx in clusters[cluster_id]:
+            if seg_idx < len(segmented_leaves) and len(segmented_leaves[seg_idx].points) > 0:
+                fused_points.append(np.asarray(segmented_leaves[seg_idx].points))
+        
+        if fused_points:
+            fused_points = np.vstack(fused_points)
+            color = cluster_colors(cluster_id)[:3]
+            label = f"C{cluster_id}"
+            if best_gt_part is not None:
+                label += f"→P{int(best_gt_part)}"
+            label += f" (IoU: {iou:.3f})"
+            ax2.scatter(fused_points[:, 0], fused_points[:, 1], fused_points[:, 2], 
+                       s=5, color=color, alpha=0.8, label=label)
+    
+    # Plot IoU scores
+    bars = ax3.bar(range(K), iou_scores, 
+                   color=[cluster_colors(i)[:3] for i in range(K)], alpha=0.7)
+    ax3.set_xticks(range(K))
+    ax3.set_xticklabels(cluster_labels, rotation=45, ha='right')
+    ax3.set_ylim([0, 1.1])
+    ax3.axhline(y=0.5, color='r', linestyle='--', alpha=0.5, label='IoU = 0.5')
+    ax3.legend()
+    
+    # Add IoU values on bars
+    for i, (bar, iou) in enumerate(zip(bars, iou_scores)):
+        height = bar.get_height()
+        ax3.text(bar.get_x() + bar.get_width()/2., height + 0.02,
+                f'{iou:.3f}', ha='center', va='bottom', fontsize=9)
+    
+    # Fix scaling for 3D plots
+    all_pts = np.vstack([points] + [np.asarray(n.points) for n in segmented_leaves if len(n.points) > 0])
+    max_range = (all_pts.max(axis=0) - all_pts.min(axis=0)).max() / 2.0
+    mid_x = (all_pts[:, 0].max() + all_pts[:, 0].min()) / 2.0
+    mid_y = (all_pts[:, 1].max() + all_pts[:, 1].min()) / 2.0
+    mid_z = (all_pts[:, 2].max() + all_pts[:, 2].min()) / 2.0
+    
+    for ax in [ax1, ax2]:
+        ax.set_xlim(mid_x - max_range, mid_x + max_range)
+        ax.set_ylim(mid_y - max_range, mid_y + max_range)
+        ax.set_zlim(mid_z - max_range, mid_z + max_range)
+        ax.legend(loc="upper right", fontsize=8)
+    
+    plt.tight_layout()
+    
+    # Save the visualization
+    os.makedirs(output_dir, exist_ok=True)
+    output_path = os.path.join(output_dir, "unsupervised_clustering.png")
+    plt.savefig(output_path, dpi=150, bbox_inches='tight')
+    print(f"💾 Saved unsupervised clustering visualization to {output_path}")
+    plt.close()
 
 def rename_segments(root, prefix="segment"):
     """
@@ -901,6 +1395,7 @@ def main():
     parser.add_argument('--epsilon', type=float, default=5e-3 )
     parser.add_argument('--parent_dir', type=str, default='YCBV')
     parser.add_argument('--obj_num', type=int, default=1)
+    parser.add_argument('--output_dir', type=str, default='output', help='Directory to save visualization outputs')
     
     args = parser.parse_args()
     gripper_width = args.width 
@@ -945,6 +1440,7 @@ def main():
     
     elif parent_dir == 'ShapeNetPart':
         points, normals, part_ids, file_path, category_id = get_random_object(object_path)
+        
         pcd = o3d.geometry.PointCloud()
         pcd.points = o3d.utility.Vector3dVector(points)
         pcd.normals = o3d.utility.Vector3dVector(normals)
@@ -976,9 +1472,12 @@ def main():
     # -------------------------------------------------------------------------
     # Segmentation With BITSI Metric
     # -------------------------------------------------------------------------
-    root = build_segmentation_tree(points_per_slice_to_use, bitsi_x, bitsi_y, bitsi_z, slice_idx, strength_threshold)
+    output_dir = args.output_dir
+    os.makedirs(output_dir, exist_ok=True)
+    
+    root = build_segmentation_tree(points_per_slice_to_use, bitsi_x, bitsi_y, bitsi_z, slice_idx, strength_threshold, output_dir=output_dir)
     root = fuse_consecutive_segments(root, ibr_tolerance=ibr_tolerance)
-    root = apply_slicing_to_children(root, bitsi_x, bitsi_y, bitsi_z, epsilon=epsilon, thickness=thickness)
+    #root = apply_slicing_to_children(root, bitsi_x, bitsi_y, bitsi_z, epsilon=epsilon, thickness=thickness)
     root = rename_segments(root)
     
     
@@ -987,10 +1486,10 @@ def main():
     root.print_tree()
     if parent_dir == 'ShapeNetPart':
         # For ShapeNetPart, show comparison with ground truth
-        visualize_shapepart_comparison(root, points, part_ids, parent_dir)
+        visualize_shapepart_comparison(root, points, part_ids, parent_dir, output_dir=output_dir)
     else:
         # For other datasets, use regular visualization
-        visualize_tree_segments(root)
+        visualize_tree_segments(root, output_dir=output_dir)
     
 if __name__ == "__main__":
     main()
