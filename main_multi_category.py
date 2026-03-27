@@ -93,7 +93,7 @@ def load_random_object_from_dataset(parent_dir, object_name, obj_num=None):
         }
         
     elif parent_dir == "YCBV" or parent_dir == 'YCBV-Partial':
-        parent_dir_path = os.path.join("/home/khiem/Robotics/obj-decomposition", parent_dir)
+        parent_dir_path = os.path.join("/home/khiem/Point-Cloud-Decomposition-for-Grasping", parent_dir)
         pcd = o3d.io.read_point_cloud(f"{parent_dir_path}/{object_name}/nontextured.ply")
         pcd.paint_uniform_color([0, 0, 1])
         
@@ -138,7 +138,7 @@ def load_random_object_from_dataset(parent_dir, object_name, obj_num=None):
         
     return pcd, object_info
 
-def get_available_objects_for_dataset(parent_dir, root_dir="/home/khiem/Robotics/obj-decomposition"):
+def get_available_objects_for_dataset(parent_dir, root_dir="/home/khiem/Point-Cloud-Decomposition-for-Grasping"):
     """
     Get available objects for a specific dataset.
     
@@ -180,7 +180,7 @@ def get_available_objects_for_dataset(parent_dir, root_dir="/home/khiem/Robotics
     
     return []
 
-def generate_scene_layout(num_objects, scene_size=2.0):
+def generate_scene_layout(num_objects, scene_size=2.0, adversarial=False):
     """
     Generate random positions for objects in the scene.
     
@@ -190,6 +190,8 @@ def generate_scene_layout(num_objects, scene_size=2.0):
         Number of objects to place
     scene_size : float
         Size of the scene (radius)
+    adversarial : bool
+        If True, place objects close together in pairs/triplets along x-axis
         
     Returns
     -------
@@ -198,16 +200,61 @@ def generate_scene_layout(num_objects, scene_size=2.0):
     """
     layouts = []
     
-    for i in range(num_objects):
-        # Random x, y position within scene bounds
-        x = random.uniform(-scene_size, scene_size)
-        y = random.uniform(-scene_size, scene_size)
-        z = 0  # fixed height (no random z)
+    if adversarial:
+        # Adversarial mode: place objects close together in pairs or triplets
+        # Objects will be touching or nearly touching in the x-direction
+        print(f"⚔️  Adversarial mode: placing {num_objects} objects in close pairs/triplets")
+        
+        # Small spacing between objects in a group (simulating touching)
+        touch_spacing = 0.01  # Very small gap to simulate touching
+        
+        # Group objects into pairs and triplets
+        object_idx = 0
+        while object_idx < num_objects:
+            # Decide group size: prefer pairs, but use triplets if needed
+            remaining = num_objects - object_idx
+            if remaining >= 3 and random.random() < 0.4:  # 40% chance for triplet
+                group_size = 3
+            elif remaining >= 2:
+                group_size = 2
+            else:
+                group_size = 1
+            
+            # Base x position for this group
+            base_x = random.uniform(-scene_size * 0.7, scene_size * 0.7)
+            base_y = random.uniform(-scene_size * 0.7, scene_size * 0.7)
+            
+            # Place objects in the group close together along x-axis
+            for j in range(group_size):
+                if object_idx >= num_objects:
+                    break
+                
+                # X position: base position + small offset for each object in group
+                x = base_x + j * touch_spacing
+                
+                # Y position: random within scene bounds
+                y = base_y + j * touch_spacing
+                z = 0  # fixed height (no random z)
+                
+                rotation = 0.0  # fixed rotation
+                scale = 1.0     # fixed scale
+                
+                layouts.append(((x, y, z), rotation, scale))
+                object_idx += 1
+            
+            print(f"  📦 Group of {group_size} objects at x ≈ {base_x:.3f}")
+    else:
+        # Normal mode: random positions
+        for i in range(num_objects):
+            # Random x, y position within scene bounds
+            x = random.uniform(-scene_size, scene_size)
+            y = random.uniform(-scene_size, scene_size)
+            z = 0  # fixed height (no random z)
 
-        rotation = 0.0  # fixed rotation
-        scale = 1.0     # fixed scale
+            rotation = 0.0  # fixed rotation
+            scale = 1.0     # fixed scale
 
-        layouts.append(((x, y, z), rotation, scale))
+            layouts.append(((x, y, z), rotation, scale))
             
     return layouts
 
@@ -358,7 +405,7 @@ def octree_based_segmentation(pcd, max_depth=8, min_points_per_voxel=1):
 
 def create_multi_category_scene(parent_dir, object_categories, scene_size=2.0, 
                                gripper_width=0.05, gripper_height=0.07, epsilon=5e-3,
-                               strength_threshold=0.001, ibr_tolerance=0.02):
+                               strength_threshold=0.001, ibr_tolerance=0.02, adversarial=False):
     """
     Create a multi-category scene with objects from different categories.
     
@@ -378,6 +425,8 @@ def create_multi_category_scene(parent_dir, object_categories, scene_size=2.0,
         Inflection detection threshold
     ibr_tolerance : float
         Segment fusion tolerance
+    adversarial : bool
+        If True, use adversarial layout (objects close together)
         
     Returns
     -------
@@ -385,10 +434,12 @@ def create_multi_category_scene(parent_dir, object_categories, scene_size=2.0,
         (scene_pcd, scene_objects, segmentation_results)
     """
     print(f"🎬 Creating multi-category scene with {len(object_categories)} different objects from {parent_dir}")
+    if adversarial:
+        print("⚔️  Adversarial mode enabled: objects will be placed close together")
     print("=" * 60)
     
     # Generate scene layout
-    layouts = generate_scene_layout(len(object_categories), scene_size)
+    layouts = generate_scene_layout(len(object_categories), scene_size, adversarial=adversarial)
     
     # Load objects
     scene_objects = []
@@ -990,6 +1041,8 @@ def main():
     parser.add_argument('--no_individual', action='store_true',
                        help='Skip individual object visualization')
     
+    parser.add_argument('--adversarial', action='store_true', help='use adversarial or not adversarial data')
+    
     args = parser.parse_args()
     
     print("🎬 Multi-Category Scene Generation (No Segmentation)")
@@ -999,7 +1052,8 @@ def main():
     # Determine object categories
     if args.num_objects is not None and args.objects is None:
         # Load random objects
-        available_objects = get_available_objects_for_dataset(args.parent_dir)
+        available_objects = get_available_objects_for_dataset(args.parent_dir) 
+        
         if not available_objects:
             print(f"❌ No objects found for dataset {args.parent_dir}")
             return
@@ -1022,7 +1076,8 @@ def main():
     scene_pcd, scene_objects, segmentation_results = create_multi_category_scene(
         parent_dir=args.parent_dir,
         object_categories=object_categories,
-        scene_size=args.scene_size
+        scene_size=args.scene_size,
+        adversarial=False
     )
     
     if scene_pcd is None:

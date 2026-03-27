@@ -159,7 +159,7 @@ def fit_best_chebyshev(x, y, min_deg=3, max_deg=None, criterion="bic", strength_
     
     return coeffs, degree, y_fit, best, inflections
 
-def visualize_tree_segments(root_node, output_dir=None):
+def visualize_tree_segments(root_node, output_dir=None, filename=None):
     """
     Visualize all child segments of a tree (excluding the root node).
 
@@ -169,6 +169,8 @@ def visualize_tree_segments(root_node, output_dir=None):
         The root node of the segmentation tree.
     output_dir : str, optional
         Directory to save the visualization. If None, displays the plot.
+    filename : str, optional
+        Name of the file to save the visualization. If None, the visualization is not saved.
     """
     # Gather all children recursively, excluding root
     def gather_children(node):
@@ -214,7 +216,7 @@ def visualize_tree_segments(root_node, output_dir=None):
     
     if output_dir:
         os.makedirs(output_dir, exist_ok=True)
-        output_path = os.path.join(output_dir, "segmented_parts.png")
+        output_path = os.path.join(output_dir, filename)
         plt.savefig(output_path, dpi=150, bbox_inches='tight')
         print(f"💾 Saved visualization to {output_path}")
         plt.close()
@@ -332,8 +334,89 @@ class SegmentNode:
         self.cloud_object = build_cloud_object(self.pcd, gripper_width, gripper_height)
         thickness = auto_thickness(self.cloud_object, scale=0.03)         
         self.ibr_ratio = get_overall_ibr_ratio(self.cloud_object, epsilon=epsilon, thickness=thickness)
+    
+    def detect_and_break(self, eps=0.02, min_points=50, curvature_threshold=0.03):
+        """
+        Drop-in method to detect if objects are touching and split them.
+        1. Tries simple distance clustering.
+        2. If it's one blob, it removes high-curvature 'seams' to find hidden splits.
+        """
+        # --- STEP 1: Fast Distance-Based Split ---
+        # Check if they are already physically separated
+        labels = np.array(self.pcd.cluster_dbscan(eps=eps, min_points=min_points))
         
-       
+        if labels.max() > 0:
+            return self._spawn_children(labels)
+
+        # --- STEP 2: Touching Object Detection (Curvature/Normal Analysis) ---
+        # If we are here, it's one 'blob'. We look for sharp 'valleys' between objects.
+        if not self.pcd.has_normals():
+            self.pcd.estimate_normals(
+                search_param=o3d.geometry.KDTreeSearchParamHybrid(radius=eps*2, max_nn=30)
+            )
+        
+        # Compute the curvature (variation of normals) for each point
+        # In Open3D, we can estimate this by looking at how much normals deviate in a neighborhood
+        kdtree = o3d.geometry.KDTreeFlann(self.pcd)
+        curvatures = []
+        
+        points = np.asarray(self.pcd.points)
+        normals = np.asarray(self.pcd.normals)
+        
+        for i in range(len(points)):
+            [_, idx, _] = kdtree.search_knn_vector_3d(points[i], 20)
+            # Variance of normals in the neighborhood serves as a speed-proxy for curvature
+            neighbor_normals = normals[idx, :]
+            mean_normal = np.mean(neighbor_normals, axis=0)
+            curvature = 1 - np.linalg.norm(mean_normal) # High value = sharp edge/seam
+            curvatures.append(curvature)
+        
+        curvatures = np.array(curvatures)
+
+        # --- STEP 3: The "Break" (Removing the Seams) ---
+        # Identify 'smooth' points (surface centers) and 'sharp' points (the touching seams)
+        smooth_indices = np.where(curvatures < curvature_threshold)[0]
+        
+        if len(smooth_indices) < min_points:
+            return [self] # Too small to break safely
+
+        # Create a temporary 'cut' cloud without the edges
+        smooth_pcd = self.pcd.select_by_index(smooth_indices)
+        
+        # Cluster the smooth parts
+        sub_labels = np.array(smooth_pcd.cluster_dbscan(eps=eps*1.5, min_points=min_points))
+        
+        # If the smooth areas form multiple clusters, the objects are 'touching'
+        if sub_labels.max() > 0:
+            # We project the labels back to the original full cloud for a clean split
+            full_labels = np.full(len(self.points), -1)
+            full_labels[smooth_indices] = sub_labels
+            
+            # Simple nearest-neighbor to fix the 'holes' we cut out
+            return self._spawn_children(full_labels)
+
+        return [self]
+
+    def _spawn_children(self, labels):
+        """Internal helper to instantiate child nodes from labels."""
+        new_segments = []
+        for i in range(labels.max() + 1):
+            indices = np.where(labels == i)[0]
+            if len(indices) < 10: continue # Final noise check
+            
+            child = self.__class__(
+                name=f"{self.name}_part_{i}",
+                points=self.points[indices],
+                slice_idx=self.slice_idx,
+                parent=self,
+                gripper_width=self.gripper_width,
+                gripper_height=self.gripper_height
+            )
+            new_segments.append(child)
+        
+        self.children = new_segments
+        return new_segments
+        
     
     def add_child(self, child_node):
         self.children.append(child_node)
@@ -378,6 +461,7 @@ def fuse_consecutive_segments(node, ibr_tolerance=0.2):
         if i + 1 < len(node.children):
             nxt = node.children[i + 1]
             diff = abs(current.ibr_ratio - nxt.ibr_ratio)
+            print(diff)
 
             if diff < ibr_tolerance:
                 # Merge these two consecutive children
@@ -1396,6 +1480,7 @@ def main():
     parser.add_argument('--parent_dir', type=str, default='YCBV')
     parser.add_argument('--obj_num', type=int, default=1)
     parser.add_argument('--output_dir', type=str, default='output', help='Directory to save visualization outputs')
+    parser.add_argument('--adversarial', action='store_true', help='use adversarial or not adversarial data')
     
     args = parser.parse_args()
     gripper_width = args.width 
@@ -1406,7 +1491,7 @@ def main():
     parent_dir = args.parent_dir
     
     # Parameters for segmentation 
-    ibr_tolerance = 0.07
+    ibr_tolerance = 0.003
     strength_threshold = 0.01
     epsilon = 5e-3 
     
@@ -1415,26 +1500,23 @@ def main():
     # -------------------------------------------------------------------------
     if parent_dir == 'HANDAL':
         model_num = f"{args.obj_num:0{6}}"
-
-        parent_dir = os.path.join("/home/khiem/Robotics/obj-decomposition/",args.parent_dir)
+        parent_dir = os.path.join("/home/khiem/Point-Cloud-Decomposition-for-Grasping/",args.parent_dir)
         pcd = o3d.io.read_point_cloud(f"{parent_dir}/{object_path}/models/obj_{model_num}.ply")
         pcd_handle =  o3d.io.read_point_cloud(f"{parent_dir}/{object_path}/models_parts/obj_{model_num}_handle.ply")
         pcd_body =  o3d.io.read_point_cloud(f"{parent_dir}/{object_path}/models_parts/obj_{model_num}_not.ply")
-        
-        
         pcd = adjust_handal(pcd)
         pcd_body = adjust_handal(pcd_body)
         pcd_handle = adjust_handal(pcd_handle)
         pcd_handle.paint_uniform_color([0, 1, 0])
 
     elif parent_dir == "YCBV" or parent_dir == 'YCBV-Partial':
-        parent_dir = os.path.join("/home/khiem/Robotics/obj-decomposition",args.parent_dir)
+        parent_dir = os.path.join("/home/khiem/Point-Cloud-Decomposition-for-Grasping/",args.parent_dir)
       
         pcd = o3d.io.read_point_cloud(f"{parent_dir}/{object_path}/nontextured.ply")            
         pcd.paint_uniform_color([0, 0, 1])
         
     elif parent_dir == 'KITTI':
-        parent_dir = os.path.join("/home/khiem/Robotics/obj-decomposition/",args.parent_dir)
+        parent_dir = os.path.join("/home/khiem/Point-Cloud-Decomposition-for-Grasping/",args.parent_dir)
         pcd = o3d.io.read_point_cloud(f"{parent_dir}/{object_path}.ply")   
         pcd = adjust_kitti(pcd)
     
@@ -1489,7 +1571,7 @@ def main():
         visualize_shapepart_comparison(root, points, part_ids, parent_dir, output_dir=output_dir)
     else:
         # For other datasets, use regular visualization
-        visualize_tree_segments(root, output_dir=output_dir)
+        visualize_tree_segments(root, output_dir=output_dir, filename=f"{object_path}_segmented_parts.png")
     
 if __name__ == "__main__":
     main()
