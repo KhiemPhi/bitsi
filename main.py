@@ -12,6 +12,7 @@ from sklearn.cluster import KMeans, DBSCAN, AgglomerativeClustering
 from sklearn.preprocessing import StandardScaler
 from numpy.polynomial import chebyshev as C
 from scipy.spatial.distance import cdist
+from scipy.spatial import cKDTree
 from scipy.cluster.hierarchy import linkage, fcluster
 
 import random
@@ -660,13 +661,28 @@ def get_random_object(category_name=None, split='train'):
             return None, None, None, None, None
     
     # Filter files by category if specified
-    # Note: JSON format uses "shape_data" as placeholder, actual path is data/ShapeNetPart
+    # Note: JSON format uses "shape_data/{category_id}/{object_id}"
     if category_id:
-        # JSON file format: "shape_data/{category_id}/{object_id}"
-        filtered_files = [f for f in os.listdir(f'../data/ShapeNetPart/{category_id}')]
+        filtered_files = [item.split('/')[-1] for item in file_list if f'/{category_id}/' in item]
+    else:
+        filtered_files = file_list
+
+    if not filtered_files:
+        print("No files found for requested ShapeNetPart category")
+        return None, None, None, None, None
+
     random_file_path_json = random.choice(filtered_files)
-    # Construct actual file path: data/ShapeNetPart/{category_id}/{object_id}.txt
-    full_file_path = os.path.join(dataset_path, category_id, random_file_path_json)
+    if '/' in random_file_path_json:
+        parts = random_file_path_json.split('/')
+        category_id = parts[1]
+        object_id = parts[-1]
+    else:
+        object_id = random_file_path_json
+
+    # Construct actual file path: data/ShapeNetPart/{category_id}/{object_id}
+    full_file_path = os.path.join(dataset_path, category_id, object_id)
+    if not full_file_path.endswith('.txt'):
+        full_file_path += '.txt'
     
     
     if not os.path.exists(full_file_path):
@@ -1465,6 +1481,168 @@ def rename_segments(root, prefix="segment"):
     return root
 
 
+# ===============================================================
+# ADDED FOR VISUALIZATION TOOL INTEGRATION
+# Generic loaders + callable single-object segmentation API
+# ===============================================================
+def load_point_cloud_input(input_data):
+    """Load a point cloud from a file path, numpy array, or Open3D object."""
+    if isinstance(input_data, o3d.geometry.PointCloud):
+        return o3d.geometry.PointCloud(input_data)
+
+    if isinstance(input_data, np.ndarray):
+        if input_data.ndim != 2 or input_data.shape[1] < 3:
+            raise ValueError("Point array must have shape [N, 3+]")
+        pcd = o3d.geometry.PointCloud()
+        pcd.points = o3d.utility.Vector3dVector(input_data[:, :3])
+        if input_data.shape[1] >= 6:
+            pcd.normals = o3d.utility.Vector3dVector(input_data[:, 3:6])
+        return pcd
+
+    if not isinstance(input_data, str):
+        raise TypeError("input_data must be a file path, numpy array, or Open3D point cloud")
+
+    if not os.path.exists(input_data):
+        raise FileNotFoundError(f"Point cloud file not found: {input_data}")
+
+    ext = os.path.splitext(input_data)[1].lower()
+    if ext in {'.ply', '.pcd', '.xyz', '.xyzn', '.xyzrgb', '.pts'}:
+        pcd = o3d.io.read_point_cloud(input_data)
+    elif ext in {'.txt', '.csv'}:
+        data = np.loadtxt(input_data, delimiter=',' if ext == '.csv' else None)
+        if data.ndim == 1:
+            data = data.reshape(1, -1)
+        if data.shape[1] < 3:
+            raise ValueError(f"File {input_data} must contain at least 3 columns")
+        pcd = o3d.geometry.PointCloud()
+        pcd.points = o3d.utility.Vector3dVector(data[:, :3])
+        if data.shape[1] >= 6:
+            pcd.normals = o3d.utility.Vector3dVector(data[:, 3:6])
+    else:
+        raise ValueError(f"Unsupported point cloud format: {ext}")
+
+    if pcd.is_empty():
+        raise ValueError(f"Loaded point cloud is empty: {input_data}")
+    return pcd
+
+
+def collect_leaf_segments(root):
+    """Return leaf nodes only. If tree has no children, return the root itself."""
+    leaves = []
+
+    def _walk(node):
+        if not node.children:
+            leaves.append(node)
+            return
+        for child in node.children:
+            _walk(child)
+
+    _walk(root)
+    return leaves
+
+
+def assign_segment_labels_to_points(points, root, decimals=8):
+    """Map BITSI leaf segments back to an [N] label array for the original points."""
+    points = np.asarray(points)
+    if points.size == 0:
+        return np.array([], dtype=int)
+
+    leaves = collect_leaf_segments(root)
+    labels = np.full(len(points), -1, dtype=int)
+
+    rounded_lookup = {}
+    for label_id, leaf in enumerate(leaves):
+        leaf_points = np.asarray(leaf.points)
+        if leaf_points.size == 0:
+            continue
+        for point in np.round(leaf_points, decimals=decimals):
+            rounded_lookup[tuple(point.tolist())] = label_id
+
+    rounded_points = np.round(points, decimals=decimals)
+    unresolved = []
+    for idx, point in enumerate(rounded_points):
+        labels[idx] = rounded_lookup.get(tuple(point.tolist()), -1)
+        if labels[idx] == -1:
+            unresolved.append(idx)
+
+    if unresolved:
+        leaf_point_blocks = []
+        leaf_labels = []
+        for label_id, leaf in enumerate(leaves):
+            leaf_points = np.asarray(leaf.points)
+            if leaf_points.size == 0:
+                continue
+            leaf_point_blocks.append(leaf_points)
+            leaf_labels.extend([label_id] * len(leaf_points))
+
+        if leaf_point_blocks:
+            all_leaf_points = np.vstack(leaf_point_blocks)
+            tree = cKDTree(all_leaf_points)
+            _, nn_idx = tree.query(points[unresolved], k=1)
+            leaf_labels = np.asarray(leaf_labels, dtype=int)
+            labels[unresolved] = leaf_labels[nn_idx]
+
+    if np.any(labels < 0):
+        labels[labels < 0] = 0
+    return labels
+
+
+def segment_single_point_cloud(input_data, gripper_width=0.13, gripper_height=0.07,
+                               epsilon=5e-3, ibr_tolerance=0.003,
+                               strength_threshold=0.01, output_dir=None,
+                               visualize=False, segment_name='segment'):
+    """Run BITSI single-object segmentation on a point cloud and return labels."""
+    # ADDED: reusable API for the visualization tool and any other caller
+    pcd = load_point_cloud_input(input_data)
+    pcd.paint_uniform_color([0, 0, 1])
+
+    cloud_object = build_cloud_object(pcd, gripper_width, gripper_height)
+    thickness = auto_thickness(cloud_object, scale=0.03)
+    bitsi_x, bitsi_y, bitsi_z, slice_idx, points_per_slice_x, points_per_slice_y, points_per_slice_z = bitsi_metric(
+        cloud_object, epsilon=epsilon, thickness=thickness
+    )
+    points_per_slice = [points_per_slice_x, points_per_slice_y, points_per_slice_z]
+    points_per_slice_to_use = points_per_slice[slice_idx]
+
+    pretty_print_bitsi(bitsi_x, bitsi_y, bitsi_z, slice_idx)
+
+    try:
+        root = build_segmentation_tree(
+            points_per_slice_to_use, bitsi_x, bitsi_y, bitsi_z, slice_idx,
+            strength_threshold, output_dir=output_dir
+        )
+        root = fuse_consecutive_segments(root, ibr_tolerance=ibr_tolerance)
+        root = rename_segments(root, prefix=segment_name)
+    except Exception as exc:
+        print(f"⚠️ BITSI tree construction failed, falling back to one segment: {exc}")
+        root = SegmentNode(
+            name=segment_name,
+            points=np.asarray(pcd.points),
+            slice_idx=slice_idx,
+            gripper_width=gripper_width,
+            gripper_height=gripper_height,
+            epsilon=epsilon,
+        )
+
+    labels = assign_segment_labels_to_points(np.asarray(pcd.points), root)
+
+    if visualize and output_dir:
+        os.makedirs(output_dir, exist_ok=True)
+        visualize_tree_segments(root, output_dir=output_dir, filename=f"{segment_name}_segmented_parts.png")
+
+    return {
+        'pcd': pcd,
+        'root': root,
+        'labels': labels,
+        'slice_idx': slice_idx,
+        'thickness': thickness,
+        'bitsi_x': bitsi_x,
+        'bitsi_y': bitsi_y,
+        'bitsi_z': bitsi_z,
+        'points_per_slice': points_per_slice_to_use,
+    }
+
+
 def main():
     #np.warnings.filterwarnings('ignore', category=np.VisibleDeprecationWarning)
     
@@ -1481,6 +1659,8 @@ def main():
     parser.add_argument('--obj_num', type=int, default=1)
     parser.add_argument('--output_dir', type=str, default='output', help='Directory to save visualization outputs')
     parser.add_argument('--adversarial', action='store_true', help='use adversarial or not adversarial data')
+    # ADDED: allow direct segmentation from a point-cloud file path
+    parser.add_argument('--input_path', type=str, default=None, help='Direct path to a point cloud file')
     
     args = parser.parse_args()
     gripper_width = args.width 
@@ -1498,7 +1678,13 @@ def main():
     # -------------------------------------------------------------------------
     # Directory management
     # -------------------------------------------------------------------------
-    if parent_dir == 'HANDAL':
+    if args.input_path:
+        # ADDED: direct file-based loading for visualization-tool integration
+        pcd = load_point_cloud_input(args.input_path)
+        object_path = os.path.splitext(os.path.basename(args.input_path))[0]
+        parent_dir = 'CUSTOM'
+
+    elif parent_dir == 'HANDAL':
         model_num = f"{args.obj_num:0{6}}"
         parent_dir = os.path.join("/home/khiem/Point-Cloud-Decomposition-for-Grasping/",args.parent_dir)
         pcd = o3d.io.read_point_cloud(f"{parent_dir}/{object_path}/models/obj_{model_num}.ply")
@@ -1525,7 +1711,8 @@ def main():
         
         pcd = o3d.geometry.PointCloud()
         pcd.points = o3d.utility.Vector3dVector(points)
-        pcd.normals = o3d.utility.Vector3dVector(normals)
+        if normals is not None:
+            pcd.normals = o3d.utility.Vector3dVector(normals)
         pcd.paint_uniform_color([0, 0, 1])
         
     # -------------------------------------------------------------------------

@@ -14,12 +14,14 @@ import matplotlib.pyplot as plt
 import random
 import math
 from scipy.ndimage import label
+from scipy.spatial import cKDTree
 from bitsi_slicer.bitsi_slicer.slicing import get_overall_ibr_ratio
 
 # Import functions from the original main.py
 from main import (
     adjust_handal, adjust_kitti, get_random_object, get_category_mapping, 
-    get_available_categories, load_point_cloud_shapenetpart
+    get_available_categories, load_point_cloud_shapenetpart,
+    load_point_cloud_input, segment_single_point_cloud, SegmentNode, rename_segments
 )
 
 class SceneObject:
@@ -1018,6 +1020,88 @@ def visualize_multi_category_scene(scene_pcd, scene_objects, segmentation_result
         
        
 
+# ===============================================================
+# ADDED FOR VISUALIZATION TOOL INTEGRATION
+# Reusable multi-object BITSI API that callers can invoke directly
+# ===============================================================
+def segment_multi_object_point_cloud(input_data, gripper_width=0.13, gripper_height=0.07,
+                                     epsilon=5e-3, ibr_tolerance=0.003,
+                                     strength_threshold=0.01, octree_max_depth=8,
+                                     min_points_per_voxel=10, output_dir=None):
+    """Split a multi-object scene, then run BITSI on each object cluster."""
+    # ADDED: no automatic single/multi detection here; callers explicitly choose this mode
+    scene_pcd = load_point_cloud_input(input_data)
+    scene_points = np.asarray(scene_pcd.points)
+
+    segmented_pcds = octree_based_segmentation(
+        scene_pcd, max_depth=octree_max_depth, min_points_per_voxel=min_points_per_voxel
+    )
+    if not segmented_pcds:
+        segmented_pcds = [scene_pcd]
+
+    scene_tree = cKDTree(scene_points)
+    combined_labels = np.full(len(scene_points), -1, dtype=int)
+    object_labels = np.full(len(scene_points), -1, dtype=int)
+    combined_root = SegmentNode(name='scene', points=scene_points, slice_idx=0)
+    combined_root.children = []
+
+    per_object_results = []
+    label_offset = 0
+    for obj_idx, seg_pcd in enumerate(segmented_pcds):
+        result = segment_single_point_cloud(
+            seg_pcd,
+            gripper_width=gripper_width,
+            gripper_height=gripper_height,
+            epsilon=epsilon,
+            ibr_tolerance=ibr_tolerance,
+            strength_threshold=strength_threshold,
+            output_dir=output_dir,
+            visualize=False,
+            segment_name=f'object_{obj_idx + 1}_segment'
+        )
+
+        object_root = rename_segments(result['root'], prefix=f'object_{obj_idx + 1}_segment')
+        object_root.parent = combined_root
+        combined_root.children.append(object_root)
+
+        seg_points = np.asarray(seg_pcd.points)
+        _, scene_idx = scene_tree.query(seg_points, k=1)
+
+        local_labels = np.asarray(result['labels'], dtype=int)
+        combined_labels[scene_idx] = local_labels + label_offset
+        object_labels[scene_idx] = obj_idx
+        label_offset += int(local_labels.max()) + 1 if len(local_labels) else 1
+
+        per_object_results.append({
+            'object_index': obj_idx,
+            'scene_indices': scene_idx,
+            'result': result,
+        })
+
+    # Fill any leftover points conservatively from nearest labeled point
+    unlabeled = np.where(combined_labels < 0)[0]
+    labeled = np.where(combined_labels >= 0)[0]
+    if len(unlabeled) and len(labeled):
+        backfill_tree = cKDTree(scene_points[labeled])
+        _, nn_idx = backfill_tree.query(scene_points[unlabeled], k=1)
+        combined_labels[unlabeled] = combined_labels[labeled][nn_idx]
+        object_labels[unlabeled] = object_labels[labeled][nn_idx]
+
+    if np.any(combined_labels < 0):
+        combined_labels[combined_labels < 0] = 0
+    if np.any(object_labels < 0):
+        object_labels[object_labels < 0] = 0
+
+    return {
+        'pcd': scene_pcd,
+        'root': combined_root,
+        'labels': combined_labels,
+        'object_labels': object_labels,
+        'object_clouds': segmented_pcds,
+        'per_object_results': per_object_results,
+    }
+
+
 def main():
     """Main function for multi-category scene generation."""
     
@@ -1042,6 +1126,8 @@ def main():
                        help='Skip individual object visualization')
     
     parser.add_argument('--adversarial', action='store_true', help='use adversarial or not adversarial data')
+    # ADDED: allow direct multi-object segmentation from a scene file
+    parser.add_argument('--input_path', type=str, default=None, help='Direct path to a multi-object point cloud file')
     
     args = parser.parse_args()
     
@@ -1071,6 +1157,14 @@ def main():
     
     print(f"📏 Scene size: {args.scene_size}")
     print("=" * 60)
+
+    if args.input_path:
+        print(f"📥 Segmenting custom multi-object scene: {args.input_path}")
+        segmentation_results = segment_multi_object_point_cloud(args.input_path)
+        root = segmentation_results['root']
+        root.print_tree()
+        print(f"✅ Produced {len(np.unique(segmentation_results['labels']))} part labels across {len(np.unique(segmentation_results['object_labels']))} objects")
+        return
     
     # Create multi-category scene
     scene_pcd, scene_objects, segmentation_results = create_multi_category_scene(
