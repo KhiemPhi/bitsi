@@ -1,0 +1,218 @@
+================================================================================
+P3 — FULL DRAFT v2 (reviewer fixes applied; [MOCK] = illustrative placeholder)
+Geometry-Calibrated Selective Segmentation:
+Minimal-Label Risk Control from Robot Multi-View Capture
+Target: RA-L
+v2 CHANGES: (i) ALL reported risk metrics use the triangle-compatible symmetric-
+difference loss (IoU/Dice only as non-certified descriptive asides); (ii) report
+R_consensus alongside R_true so the bound mechanism is explicit; (iii) "label-free"
+softened to "label-free training + calibration; minimal-label truth BOUND";
+(iv) named Jetson (Orin NX); (v) varied OOD mock numbers.
+v3 CHANGES: added a SHIFT-ROBUST consensus-to-truth transfer (Prop 2):
+R_true^dep <= R_consensus + UCB(delta) + Gap, with Gap a finite, MEASURABLE divergence
+budget (total-variation-bounded for the metric loss; equivalently importance-weight
+ESS). This upgrades the OOD section from empirical-only to a guarantee that degrades
+GRACEFULLY with a measured shift, while still DECLINING to certify under unestimable
+shift (so no distribution-free OOD coverage is claimed). Firewall kept: pure
+segmentation, NO delta-RATE / geometry->teacher-quality claim (that stays in P4).
+================================================================================
+
+ABSTRACT
+We train a fast onboard segmenter with NO human masks for training or threshold
+calibration, and equip it with calibrated abstention; a SMALL human-labeled set is
+used only to bound the truth-facing risk. A robot captures hemispherical RGB-D with
+known poses; SAM masks fuse across views into a consensus that denoises per-view
+errors; a YOLO-seg student is distilled from it. Calibration controls risk WITH
+RESPECT TO the multi-view consensus under the Jaccard distance (a proper metric);
+the small labeled set provides a finite-sample upper bound UCB(delta) on the
+consensus-to-truth gap, yielding R_true <= R_consensus + UCB(delta). The gap delta
+shrinks with view diversity DOWN TO A FLOOR set by view-correlated SAM error, which
+we MEASURE. Under distribution shift we extend the transfer to
+R_true^dep <= R_consensus + UCB(delta) + Gap(P_cal,P_dep), where Gap is a finite,
+MEASURABLE divergence term (bounded by total variation for our metric loss), so the
+truth-facing bound degrades gracefully with a measured shift budget rather than going
+silent out-of-distribution; beyond an estimable budget we decline to certify. Consensus-based calibration matches annotation-based calibration on
+ScanNet/Replica [MOCK: risk-cov AUC 0.86 vs 0.87, symmetric-difference loss]; the
+student runs real-time onboard [MOCK: 31 FPS, Jetson Orin NX]. We do not claim to
+exceed SAM; we provide a fast, abstaining student whose risk is bounded relative to
+truth with minimal labels.
+
+--------------------------------------------------------------------------------
+1. INTRODUCTION
+--------------------------------------------------------------------------------
+Human masks are expensive; SAM is accurate but too slow onboard; and a robot needs
+both fast masks and a reliable signal of WHEN a mask is untrustworthy. We turn a
+robot's controlled multi-view capture into a calibration oracle: because camera
+transforms are known, masks transferred across views must be geometrically
+consistent, and their disagreement is a calibration signal requiring no human
+annotation. We use this twice: (i) a multi-view CONSENSUS mask is a denoised
+distillation target; (ii) cross-view disagreement, scored on view-disjoint data, is
+a nonconformity score for calibrated abstention. A small human-labeled set is used
+ONLY to bound the consensus-to-truth gap -- not to train and not to set the
+threshold; we are explicit that the truth-facing certificate therefore needs
+minimal labels.
+
+Contributions.
+ 1. Multi-view geometric consensus as a calibration oracle for segmentation.
+ 2. A consensus-to-truth risk transfer R_true <= R_consensus + UCB(delta) under a
+    triangle-compatible loss, with an explicit, MEASURED view-correlated-error floor.
+ 3. A leakage-free wedge nonconformity score (angularly-buffered, view-disjoint).
+ 4. A real-time onboard selective segmenter trained with zero human masks.
+ 5. A SHIFT-ROBUST extension of the transfer, R_true^dep <= R_consensus + UCB(delta)
+    + Gap(P_cal,P_dep), where Gap is a finite, MEASURABLE divergence term (total-
+    variation-bounded for the metric loss; equivalently importance-weight ESS),
+    turning cross-distribution risk from an empirical-only study into a guarantee
+    that degrades gracefully with a measured shift budget -- and that explicitly
+    DECLINES to certify when the budget is unestimable (no distribution-free OOD
+    coverage claim).
+This paper is purely about segmentation; no cross-task claim.
+
+--------------------------------------------------------------------------------
+2. RELATED WORK
+--------------------------------------------------------------------------------
+SAM distillation: MobileSAM, EdgeSAM, FastSAM, RepViT-SAM. Multi-view SAM lifting:
+SA3D, SAMPro3D, SAM3D, Gaussian-Grouping, Panoptic-Lifting [Siddiqui'23] (consensus
+as a TRAINING signal). Conformal / risk control: CRC [Angelopoulos'22]; RCPS
+[Bates'21]; LTT [Angelopoulos'21]; semi-supervised conformal [Einbinder/Bates];
+beyond exchangeability [Barber-Candes-Ramdas-Tibshirani'23]; weighted conformal under
+covariate shift [Tibshirani'19]. We differ by the calibration GUARANTEE, the measured
+consensus-truth floor, and a SHIFT-ROBUST consensus-to-truth transfer whose OOD
+inflation is a measurable divergence budget rather than an unquantified degradation.
+
+--------------------------------------------------------------------------------
+3. METHOD
+--------------------------------------------------------------------------------
+3.1 Capture and consensus. K hemisphere views (known poses); SAM per view; masks
+projected to a common frame and voted into consensus C(X). Consensus cancels
+VIEW-DEPENDENT flicker, NOT view-correlated SAM errors (this sets the delta floor).
+3.2 Distillation. A YOLO-seg student is trained on consensus masks (no human
+labels). We report mask quality "within X (symmetric-difference) of SAM" with a
+stated tolerance, stratified by scene difficulty -- NOT a "beats SAM" claim.
+3.3 Leakage-free wedge score. For held-out view v, the nonconformity score compares
+the mask in v to the consensus from an ANGULARLY-BUFFERED wedge EXCLUDING v and its
+geometric neighbors; we report sensitivity to buffer width.
+3.4 Calibration and loss. Using the frozen student, calibrate the abstention
+threshold via conformal risk control under the JACCARD DISTANCE loss
+d(A,B) = 1 - |A intersect B|/|A union B| = |A XOR B|/|A union B|. This is a PROVEN
+METRIC (Jaccard/Tanimoto; the triangle inequality holds), which is what licenses
+the additive transfer in Prop 1. ALL reported certified risks (Sec. 5) use this
+loss; IoU and Dice are NOT metrics (triangle inequality fails) and appear only as
+descriptive, non-certified asides. Object/scene-level units. The threshold controls
+R_consensus; the small human set provides UCB(delta) on the consensus-truth gap.
+
+--------------------------------------------------------------------------------
+4. THEORY
+--------------------------------------------------------------------------------
+Proposition 1 (consensus-to-truth transfer). With the Jaccard distance (a metric),
+object-level exchangeable units, leakage-free scoring, and a frozen student,
+conformal calibration gives, with high probability,
+   R_true(accepted) <= R_consensus(accepted) + UCB(delta),
+where the triangle inequality on the metric loss licenses the additive split and
+UCB(delta) is a finite-sample upper bound on delta = E[d(C, Y)] estimated on the
+human set. (The metric property is essential: IoU/Dice are NOT metrics and do NOT
+satisfy the triangle inequality, so the split would be invalid for them.)
+JOINT CONFIDENCE: the level-alpha CRC on R_consensus and the delta-UCB are combined
+by a union bound, so the transfer holds jointly with probability
+>= 1 - (delta_cal + delta_gap).
+
+Remark (the floor). SAM errors are CORRELATED across views, so voting does not drive
+delta to zero; delta decreases with view diversity only DOWN TO A FLOOR set by the
+correlated-error component, which we MEASURE (Sec. 5.4). We never claim delta -> 0.
+
+Proposition 2 (shift-robust transfer). Let calibration scenes be drawn from P_cal and
+deployment scenes from P_dep. With the same metric loss (bounded in [0,1]), leakage-
+free scoring, and a frozen student, weighted conformal calibration (importance weights
+dP_dep/dP_cal, or the coverage-gap machinery of [Barber et al.'23]) gives, with high
+probability,
+   R_true^dep(accepted) <= R_consensus(accepted) + UCB(delta) + Gap(P_cal, P_dep),
+where Gap is a finite, MEASURABLE inflation term. For the Jaccard distance (loss in
+[0,1]) the additive gap satisfies Gap <= TV(P_dep, P_cal), a total-variation budget we
+ESTIMATE (Sec. 5.7-5.8); equivalently the bound is controlled by the effective sample
+size of the importance weights. When the shift is small and estimable the bound is
+non-vacuous; when the shift budget is unbounded or unestimable we make NO guarantee and
+report empirical degradation only (Sec. 5.7). This does NOT claim distribution-free OOD
+coverage -- the guarantee is explicitly CONDITIONAL on a measured divergence, and we
+report the regime where it is vacuous.
+
+Scope. In-distribution the transfer is exact up to UCB(delta); under shift it holds up
+to a MEASURED divergence budget (Prop 2), and beyond an estimable budget we report
+empirical degradation only (5.7). We control risk on the accepted set; we do not
+"certify the masks" in any absolute sense, and the truth-facing bound depends on the
+(small) human set.
+
+--------------------------------------------------------------------------------
+5. EXPERIMENTS  ([MOCK] numbers illustrative; all certified risks = Jaccard distance)
+--------------------------------------------------------------------------------
+5.1 Setup. Robot hemisphere capture (no grasp campaign); SAM 2; YOLO11-seg student;
+ScanNet/Replica public anchor; Jetson Orin NX for onboard timing; human-labeled
+set size m=60 scenes (for UCB(delta) only).
+5.2 Label-free vs labeled calibration parity (headline). Risk-coverage curves
+(symmetric-difference loss): consensus-calibrated vs annotation-calibrated on
+ScanNet/Replica GT. [MOCK] AUC 0.86 (consensus) vs 0.87 (labeled) -- near parity,
+with CIs.
+5.3 Realized-risk check. Report BOTH R_consensus and R_true vs nominal alpha and
+UCB(delta), all in symmetric-difference. [MOCK] at alpha=0.10: R_consensus=0.098
+(<= alpha), UCB(delta)=0.04, realized R_true=0.12 <= R_consensus+UCB = 0.138. The
+bound holds because the realized gap (~0.02) is under UCB (0.04).
+5.4 delta floor. UCB(delta) vs number of views and view-correlation rho; show the
+floor. [MOCK] delta drops 0.10 -> 0.038 by ~8 views, then plateaus (floor ~0.034)
+as rho dominates. UCB(delta) width vs human-set size m reported (power curve).
+5.5 Leakage sensitivity. Realized risk vs angular buffer width; naive adjacent-view
+scoring is anti-conservative [MOCK realized 0.17 at nominal 0.10]; wedge scoring
+restores validity [MOCK 0.12].
+5.6 Abstention vs true error in clutter; SAM-parity stratified by scene difficulty
+(symmetric-difference); onboard runtime [MOCK 31 FPS @ Orin NX, latency 32 ms];
+label-hours saved [MOCK ~110 h vs supervised parity].
+5.7 Cross-distribution degradation + shift-budget measurement. Empirical coverage
+degrades across held-out categories [MOCK] 0.83 -> 0.61; mask routes [MOCK] ~38% of
+OOD failures to abstain. We ALSO estimate the shift budget feeding Prop 2's Gap term:
+an estimated total variation / density-ratio between calibration and each held-out
+category [MOCK: TV in 0.05-0.22], with the estimator's own uncertainty reported (the
+budget must be trusted for the bound to hold).
+5.8 Shift-robust bound validity (Prop 2). Realized R_true^dep vs the shift-robust
+bound R_consensus + UCB(delta) + Gap across held-out categories. [MOCK] near category
+(TV~0.06) at alpha=0.10: bound = 0.098 + 0.04 + 0.06 = 0.198, realized R_true^dep =
+0.15 <= bound (holds, non-vacuous). Far category (TV~0.22): bound ~0.36 (holds but
+loose); when TV is unestimable we DECLINE to certify and fall back to 5.7. We report
+the fraction of held-out categories where the budget is estimable AND the bound holds
+[MOCK: 7/9], and flag the vacuous regime explicitly.
+
+--------------------------------------------------------------------------------
+6. LIMITATIONS
+--------------------------------------------------------------------------------
+The truth-facing bound depends on a small human-labeled set; "label-free" applies
+to training and threshold calibration, not the truth bound. delta does not vanish
+(correlated-error floor). Hemisphere capture misses bottom/support-occluded
+geometry. In-distribution guarantee; under shift the guarantee holds only up to a
+MEASURED divergence budget (Prop 2). The shift-robust bound requires an ESTIMABLE
+divergence (TV / importance weights): under unbounded or unmeasurable shift we provide
+no guarantee and fall back to empirical degradation (5.7), and the bound loosens as TV
+grows -- becoming vacuous for far categories, which we report rather than hide. Wedge
+scoring needs sufficient angular spread.
+
+--------------------------------------------------------------------------------
+7. CONCLUSION
+--------------------------------------------------------------------------------
+A robot's controlled multi-view capture is a calibration oracle: it distills a fast
+onboard segmenter and bounds its risk relative to truth via a measured
+consensus-to-truth gap -- calibrated abstention with minimal labels.
+
+--------------------------------------------------------------------------------
+8. CODE REUSE (implementation map -- for the authors)
+--------------------------------------------------------------------------------
+Reuse from the existing bitsi repo:
+ - hemisphere capture pipeline (existing rig code) -> 3.1 capture with known poses
+ - main_multi_category.py -> multi-object scene handling / loading utilities
+ - bitsi_slicer/bitsi_slicer/point_cloud.py -> point/normal utilities, transforms
+ - existing cross-view mask-transfer code (camera-transform projection) -> 3.1/3.3
+NEW thin modules to add:
+ - consensus.py   : project + vote SAM masks into a common-frame consensus (3.1)
+ - wedge_score.py : angularly-buffered view-disjoint nonconformity score (3.3)
+ - crc_calib.py   : conformal risk control (symmetric-difference loss) + UCB(delta)
+External libraries:
+ - SAM 2 (Meta): per-view masks (temporal/view memory strengthens consensus)
+ - Ultralytics YOLO11-seg: fast student; export to TensorRT for Orin NX
+ - Open3D: camera transforms, point projection, fusion
+ - MAPIE / TorchCP / crepes: conformal risk control / CRC
+ - ScanNet / Replica loaders: public-benchmark anchor + GT for parity (5.2)
+================================================================================

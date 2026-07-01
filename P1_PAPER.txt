@@ -1,0 +1,230 @@
+================================================================================
+P1 — FULL DRAFT v2 (reviewer fixes applied; [MOCK] = illustrative placeholder)
+Selective Grasping: Object-Level Calibrated Abstention for Manipulation
+Target: ICRA 2027
+v2 CHANGES: (i) headline reframed from success-lift to CALIBRATION; (ii) dual-score
+framing (BITSI-IBR vs EDT-medial under ONE certificate) -- report honestly that EDT
+slightly dominates; BITSI remains the decomposition ENGINE + a compared score;
+(iii) baselines run in NATIVE config (not crippled); (iv) calibration set enlarged
+to 40 objects, report LTT UCB widths + #accepted; (v) dropped the word "exact".
+================================================================================
+
+ABSTRACT
+Data-driven grasp networks predict where to grasp but output uncalibrated
+confidence: a high score does not correspond to a controlled failure rate, and a
+robot has no principled way to decline a grasp it cannot trust. We present a
+grasping system with a calibrated abstention option. From a fixed multi-view
+capture fused into a TSDF, we propose grasps with a standard medial decomposition
+engine (BITSI) and screen them with a standard analytic test; our contribution is
+a calibration FRAMEWORK that turns a per-part graspability score into an
+object-level selective-risk certificate, and that ADMITS AND COMPARES grounded
+geometric scores under one certificate. Using held-out objects with OBSERVED
+grasp outcomes, an RCPS/LTT threshold controls the failure rate on the ACCEPTED
+set with a finite-sample, in-distribution bound. An observability mask routes
+grasps that depend on unobserved geometry to abstention. The headline result is
+CALIBRATION: realized risk tracks the nominal level on held-out objects [MOCK:
+0.11 realized within the LTT bound at alpha=0.10]; under the certificate, an EDT
+medial-radius score slightly outperforms the BITSI-IBR score [MOCK: risk-cov AUC
+0.83 vs 0.80]. We do not claim higher RAW grasp success than learned networks; we
+provide the calibrated reject option they lack. We make no change to the BITSI
+engine; we calibrate its (and an alternative geometric) graspability score into a
+reject option with controlled grasp-failure risk.
+
+--------------------------------------------------------------------------------
+1. INTRODUCTION
+--------------------------------------------------------------------------------
+Deployed manipulation needs to know when NOT to act. A bin-picker that fails on 8%
+of items is acceptable if it can FLAG that 8% for re-imaging or hand-off, but
+learned grasp scores are not calibrated to failure probability and degrade
+silently under occlusion and distribution shift.
+
+We keep perception and grasp synthesis standard, and make the contribution the
+DECISION layer: a distribution-free certificate on executed grasps, an
+observability-aware abstention, and a framework that lets DIFFERENT geometric
+graspability scores be compared on equal footing under one certificate. We reuse
+the BITSI decomposition engine (interior-boundary-ratio (IBR) metric, a
+Chebyshev-smoothed slice profile, and an octree recursion into gripper-sized
+parts) exactly as published; it is standard method detail, not a contribution.
+
+Contributions.
+ 1. Object-level selective-risk certificate for grasping: finite-sample,
+    in-distribution control of grasp-failure risk on the accepted set (RCPS/LTT)
+    from OBSERVED outcomes.
+ 2. A calibration framework that admits and compares grounded geometric scores,
+    instantiated on the BITSI-IBR metric and an EDT medial-radius score; we report
+    which calibrates to a better risk-coverage frontier rather than assuming one.
+ 3. Observability-mask abstention: never act on geometry the sensor never saw.
+ 4. Real-robot evaluation in clutter; the prior method [P0] appears as a measured
+    baseline, framed as a risk-CONTROL comparison (not a success-lift claim).
+
+Relation to prior work [P0]. P0 GRASPS with the BITSI IBR metric (point estimate
+-> act). P1 CALIBRATES a geometric graspability score into a certified reject
+option (uncalibrated statistic -> calibrated reject). The contribution is the
+certificate over the statistic, not the statistic; we make no change to BITSI and
+do not re-report its decomposition results.
+
+--------------------------------------------------------------------------------
+2. RELATED WORK
+--------------------------------------------------------------------------------
+Data-driven grasping. Contact-GraspNet [Sundermeyer'21], 6-DOF GraspNet
+[Mousavian'19], GPD [tenPas'17], Dex-Net [Mahler]: strong raw success,
+uncalibrated scores, no distribution-free reject option.
+Conformal / risk control. Split conformal [Vovk; Lei'18]; RCPS [Bates'21];
+Learn-then-Test [Angelopoulos'21]; robot abstention KnowNo [Ren'23]; conformal
+planning [Lindemann'23]. We control SELECTIVE grasp-failure risk with the OBJECT
+as exchangeable unit and an observability-coupled abstention.
+Geometric decomposition. Medial axis [Blum]; shape diameter [Shapira'08]; ACD
+[Lien; CoACD]; BITSI [P0].
+
+--------------------------------------------------------------------------------
+3. THE BITSI ENGINE (standard, not novel; full detail in Appendix A)
+--------------------------------------------------------------------------------
+3.1 IBR graspability metric: interior-boundary ratio x occupancy-emptiness, per
+part (high = thin, solid, gripper-scale region).
+3.2 Chebyshev slice profile: the IBR-vs-position profile is smoothed by a low-order
+Chebyshev fit; part boundaries are profile extrema. Chebyshev gives bounded minimax
+(equioscillation) approximation error; because the certificate is calibrated on
+OBSERVED success it is agnostic to the smoother (robustness in App. B).
+3.3 Octree decomposition: standard recursive decomposition (not a contribution)
+into gripper-sized parts.
+Frozen-engine note. All engine hyperparameters (Chebyshev degree, octree depth,
+IBR thresholds) are fixed a priori or on a SEPARATE split, never tuned on
+calibration grasp-outcomes, preserving calibration validity.
+
+--------------------------------------------------------------------------------
+4. METHOD: CERTIFIED SELECTIVE GRASPING
+--------------------------------------------------------------------------------
+4.1 Capture. Scene X ~ P captured from a FIXED budget of K hemisphere views
+(known poses), fused into a TSDF. (Fixed-budget; no adaptive stopping -- that is
+P2.)
+4.2 Candidates and scores. BITSI proposes parallel-jaw grasps {g_j}. We evaluate
+TWO geometric nonconformity scores under the SAME certificate: (a) BITSI-IBR
+graspability of the grasped part; (b) an EDT medial-radius margin (w/2 - r). A
+standard analytic screen rejects infeasible grasps (antipodal contacts with
+anti-parallel normals inside the friction cone via wrench-span; gripper-body
+collision; approach reachability), with the friction cone inflated by local
+normal-estimation uncertainty.
+4.3 Observability mask. Part observability o in [0,1] = fraction of support voxels
+actually observed; if o < o_min the score is -inf -> automatic abstention. We
+never certify grasps on hallucinated geometry; completeness claimed only ABOVE the
+support plane.
+4.4 Object-level selective-risk calibration. Hold out n OBJECTS, each with one
+executed grasp at the top candidate and observed binary failure Y. Over a grid of
+thresholds tau, form a finite-sample upper confidence bound R+(tau) (Bentkus) on
+the selective risk R(tau)=Pr(Y=1 | s_star>=tau); select tau_hat=min{tau:R+(tau)<=
+alpha}, grid multiplicity-corrected per LTT. Exchangeable unit = object.
+
+--------------------------------------------------------------------------------
+5. THEORETICAL GUARANTEE
+--------------------------------------------------------------------------------
+Proposition 1 (selective risk control). Let {X^(i)} and X be exchangeable draws
+from P with observed outcomes, tau_hat selected as in 4.4 at level (alpha,delta).
+Then with probability >= 1-delta over the calibration draw,
+   R(tau_hat) = Pr(Y_star=1 | s_star(X) >= tau_hat) <= alpha.
+In-distribution and marginal over objects. Because outcomes are OBSERVED, there is
+no unobserved-outcome (oracle) gap: the bound is a finite-sample UCB (Bentkus),
+not an equality, and is SCORE-AGNOSTIC -- it holds for the BITSI-IBR score, the
+EDT score, or any measurable s, provided the score is frozen across cal/test and
+units are per-object i.i.d. We report the realized risk on the ACCEPTED objects
+together with the LTT-corrected UCB value at tau_hat and its CI width vs n.
+
+Remark 1 (decomposition stability). The medial field of the EDT score is the
+distance-to-surface function of the fused TSDF; its persistence diagram is
+1-Lipschitz in Hausdorff distance [Chazal-Cohen-Steiner-Lieutier], bounding how
+reconstruction noise perturbs the score INPUT.
+
+Out of scope. No stopping-time claim (fixed-budget capture; see P2); no
+cross-category guarantee (studied empirically, 6.7). We certify the grasp-failure
+RISK on the accepted set; we do NOT certify that any score is a good graspability
+measure, and calibration does not ground BITSI's geometry.
+
+--------------------------------------------------------------------------------
+6. EXPERIMENTS  ([MOCK] numbers illustrative)
+--------------------------------------------------------------------------------
+6.1 Setup. Franka + parallel-jaw + wrist RealSense; K=12-view hemisphere, Open3D
+TSDF fusion. 40 objects across 8 categories (object-level cal/test split);
+isolated + clutter; >=300 real grasp attempts; alpha in {0.10,0.20}, delta=0.10.
+Calibration unit = the OBJECT: the finite-sample UCB is driven by the number of
+held-out CALIBRATION OBJECTS (reported per split), NOT by the 300 execution
+attempts, which are trials used to estimate per-object outcomes.
+Baselines run in their NATIVE configuration on the same scenes: Contact-GraspNet
+(full network ranking + its own confidence), GPD, plus a confidence-threshold
+ablation of our score.
+6.2 Make-or-break: score vs real success. Spearman rho between score and observed
+success. [MOCK] IBR rho=0.53; EDT rho=0.62. Both monotone -> usable; EDT stronger.
+6.3 HEADLINE -- calibration. Realized selective risk on HELD-OUT objects vs nominal
+alpha, with the LTT UCB and binomial CIs (n_accepted reported). [MOCK] alpha=0.10:
+LTT UCB=0.118, realized=0.11 over 27 accepted objects; alpha=0.20: UCB=0.214,
+realized=0.19. Realized tracks within the UCB -> the certificate is valid and
+non-vacuous at n=40.
+6.4 Risk-coverage frontier (secondary). Selective success vs coverage; ours
+(EDT/IBR + mask) vs CGN/GPD in native config.
+  Method                          RiskCov-AUC up   SelSucc@80%cov up
+  GPD (native)                    0.71 [MOCK]      0.83 [MOCK]
+  Contact-GraspNet (native)       0.75 [MOCK]      0.87 [MOCK]
+  Ours (IBR score + mask)         0.80 [MOCK]      0.91 [MOCK]
+  Ours (EDT score + mask)         0.83 [MOCK]      0.93 [MOCK]
+Improvements reported with CIs; we claim a better risk-coverage frontier, not
+higher raw success.
+6.5 Dual-score ablation. EDT slightly dominates IBR under the same certificate
+(6.2/6.4). We therefore PRESENT BOTH and recommend EDT as the score; IBR remains
+the engine's part-proposer signal. (This is the framework's point: scores are
+interchangeable inputs the certificate compares.)
+6.6 Certificate robustness to engine hyperparameters. Risk-cov AUC vs octree
+depth, gripper-width threshold, Chebyshev degree, smoother choice
+(Chebyshev/spline/Gaussian), under depth noise + partial views. [MOCK] AUC varies
+< 0.02 -> certificate robust to the engine.
+6.7 OOD degradation study (empirical only; no guarantee language). Calibrate on a
+category split, test on held-out categories; coverage degrades [MOCK] 0.78 -> 0.59;
+the observability mask accounts for [MOCK] ~46% of OOD failures it routes to abstain.
+6.8 Relation to P0. P0 executes BITSI grasps with no reject option, so a
+risk-coverage comparison is not applicable (N/A). The certificate is orthogonal to
+P0's point-estimate policy: it wraps a calibrated abstain around the same geometry.
+We deliberately report NO head-to-head success/risk lift over P0 -- the contribution
+is the certificate, not a delta over our prior decomposition work.
+
+--------------------------------------------------------------------------------
+7. LIMITATIONS
+--------------------------------------------------------------------------------
+In-distribution guarantee only. Hemisphere capture leaves bottom/support-occluded
+geometry unobserved (handled by abstention; caps coverage). Score fidelity floored
+by voxel resolution. Object-level calibration: tightness scales with object count;
+we report UCB width vs n and use n=40 to keep the bound non-vacuous.
+
+--------------------------------------------------------------------------------
+8. CONCLUSION
+--------------------------------------------------------------------------------
+A standard grasp stack plus an object-level selective-risk certificate, an
+observability-aware abstention, and a score-comparison framework turns an
+uncalibrated grasp predictor into one with a controlled, verifiable failure rate
+on the grasps it executes.
+
+--------------------------------------------------------------------------------
+9. CODE REUSE (implementation map -- for the authors)
+--------------------------------------------------------------------------------
+Reuse from the existing bitsi repo:
+ - bitsi_slicer/bitsi_slicer/slicing.py:
+     bitsi_metric(), get_overall_ibr_ratio()  -> IBR graspability score (4.2a)
+     slice_object_bbox(), accumulate_slices(), fuse_slices()  -> part proposer
+     get_faces(), get_plane_distance()         -> boundary/interior computation
+ - main.py:
+     SegmentNode (class), build_segmentation_tree(), apply_slicing_to_children(),
+     detect_and_break()  -> octree recursion into gripper-sized parts
+     fit_best_chebyshev() -> Chebyshev slice-profile smoothing (3.2)
+     auto_thickness()     -> slice thickness selection
+ - bitsi_slicer/bitsi_slicer/occupancy.py:
+     OccupancyStruct  -> occupancy grid; ADD scipy.ndimage.distance_transform_edt
+     on OccupancyStruct.occupancy_grid -> EDT medial-radius field r(x) (4.2b)
+ - bitsi_slicer/bitsi_slicer/point_cloud.py:
+     PointCloud, compute_bounding_box(), estimate_normals  -> analytic grasp test
+NEW thin modules to add:
+ - grasp_test.py  : friction-cone wrench-span + collision + reachability (4.2)
+ - observability.py : support-voxel observed-fraction mask (4.3)
+ - selective.py   : object-level RCPS/LTT calibration + abstain (4.4)
+External libraries:
+ - Open3D: ScalableTSDFVolume (TSDF fusion), normals, registration
+ - scipy.ndimage.distance_transform_edt: EDT medial radius
+ - MAPIE / TorchCP / crepes: conformal / RCPS / LTT calibration
+ - Contact-GraspNet (NVIDIA, public) + GPD (public): native baselines (6.4)
+ - MoveIt or PyBullet/Isaac: reachability + collision checking
+================================================================================

@@ -1,0 +1,330 @@
+================================================================================
+BITSI RESEARCH PROGRAM — PAPER PLAN
+Consolidated after 6 rounds of 3-critic adversarial review (CV/topology,
+robotics/grasp, statistics/conformal). Dates relative to 2026-06-30.
+NOTE: conference deadlines are TYPICAL windows — VERIFY exact dates.
+================================================================================
+
+--------------------------------------------------------------------------------
+0. PORTFOLIO SUMMARY (final panel scores, post claim-tightening)
+--------------------------------------------------------------------------------
+  P0  Point Cloud Decomposition for Task-Oriented Grasping  [PUBLISHED — baseline]
+
+  ID  Paper                              Venue        Score  Decision      Finalist
+  --  ---------------------------------  -----------  -----  ------------  --------
+  P3  Geometry-Calibrated Selective Seg  RA-L         7.5    Safe accept   no
+  P1  Selective Grasping                 ICRA 2027    8.0    Safe accept   no
+  P2  Acting to Certify                  RSS 2027     8.0    Safe accept   YES
+  P4  Self-Certifying Robot Perception   journal/2028 cond.  flagship      if delta-rate
+
+  Status: P1/P2/P3 are all in SAFE-ACCEPT territory. All prior "reads-as-false"
+  statements removed; soundness maxed (4.8/4.8/4.7 avg). Remaining work is
+  empirical-significance + text-discipline, NOT structural.
+  The ONLY finalist/flagship lever left is the geometric delta-rate theorem.
+
+--------------------------------------------------------------------------------
+1. STRATEGY
+--------------------------------------------------------------------------------
+  SHARED SPINE (validated by panel): geometry-grounded, label-free, calibrated
+  abstention -> "abstain and act" loop. Same machinery reused across papers.
+
+  CONFERENCE -> UNIFY: P1 and P3 prove only their INSTANCE; P4 (later) proves the
+  abstraction + cross-task generality, citing them (standard journal-capstone).
+
+  FIREWALLS (mandatory to avoid self-overlap):
+    - P1 carries NO stopping theory (fixed/budgeted capture only). Stopping is P2.
+    - P3 carries NO general theorem and NO grasping. Pure segmentation.
+    - P2 owns ALL active/stopping theory + articulation.
+    - P1 firewalled from P0 (prior paper = baseline; new result = "rejecting
+      uncertified grasps lifts real success A->B").
+
+  RIG IS THE CRITICAL PATH: one robot, ~18 months. Build capture+TSDF+calibration
+  infra ONCE (in P1) and amortize. Do NOT run P1 and P2 robot campaigns in parallel.
+
+  GLOBAL CLAIM-TIGHTENING RULES (apply to all papers):
+    1. "guarantee" only for finite-sample, in-distribution statements.
+       OOD = "empirical degradation study" (never "coverage"/"guarantee").
+    2. Coverage is MARGINAL over the stated unit (object/scene). Never per-instance.
+    3. delta has a CORRELATED-ERROR FLOOR. Never imply delta -> 0 with more views.
+    4. P2 stopping = DETERMINISTIC GEOMETRIC stability. Never "distribution-free
+       risk control" / never "certify correctness" (it certifies stabilization).
+    5. Reused machinery (BITSI decomposition, analytic grasp test, SAM->YOLO
+       distillation) labeled "standard, not claimed novel."
+    6. Banned words: "first", "beats SAM", "beats learned nets on raw success",
+       "against truth" (unbounded).
+
+--------------------------------------------------------------------------------
+2. DEADLINE CALENDAR (Jul–Dec 2026; verify exact dates)
+--------------------------------------------------------------------------------
+  Jul     De-risk P3 consensus->truth bound (gates P3). Draft P3.
+          Build P1 capture+TSDF+calibration infra (reused downstream).
+  Aug     Finish P3 -> SUBMIT RA-L (rolling). Run P1 grasp campaign (clutter,
+          >=200 attempts). Draft P1.
+  Sep     SUBMIT P1 -> ICRA 2027 (~Sep 1). Start delta-rate theorem + sim (no rig).
+  Oct-Nov Run P2 experiments (active stopping = software on P1 substrate;
+          articulation object set). Draft P2.
+  Dec     Finish P2 draft -> ready for RSS 2027 (~Jan/Feb deadline).
+
+  RA-L is the workhorse (rolling) — submit whichever paper is ready first.
+
+================================================================================
+PAPER P3 — GEOMETRY-CALIBRATED SELECTIVE SEGMENTATION
+Venue: RA-L (rolling). Submit first (~Aug 2026). Score 7.5 / safe accept.
+Reuse: hemisphere rig, SAM 2, cross-view transfer, YOLO11-seg, Open3D, MAPIE/TorchCP.
+Firewall: pure segmentation — NO general theorem, NO grasping.
+================================================================================
+
+ABSTRACT (claim-exact)
+  A robot captures hemispherical RGB-D with known poses; SAM masks fuse across
+  views into a consensus that denoises per-view errors; a fast YOLO-seg student is
+  distilled with NO human masks and equipped with calibrated abstention. Calibration
+  controls risk w.r.t. the multi-view consensus; a small held-out labeled set
+  provides a finite-sample upper bound UCB(delta) on the consensus-to-truth gap,
+  yielding R_true <= R_consensus + UCB(delta). delta shrinks with view diversity
+  down to a floor set by view-correlated SAM error. Consensus-based calibration
+  matches annotation-based calibration on ScanNet/Replica; the segmenter runs
+  real-time onboard.
+
+CONTRIBUTIONS
+  1. Multi-view geometric consensus as a label-free calibration oracle.
+  2. Consensus-to-truth risk transfer: R_true <= R_consensus + UCB(delta), finite-
+     sample, with explicit correlated-error floor on delta.
+  3. Leakage-free wedge nonconformity score (angularly-buffered, view-disjoint).
+  4. A real-time onboard selective segmenter trained with zero human masks.
+
+CLAIMS LEDGER (claim | evidence required | FORBIDDEN)
+  - Risk control w.r.t. consensus, marginal over object units
+      | CRC on object-level units, frozen model, symmetric-difference loss
+      | FORBIDDEN: "per-instance", "distribution-free truth coverage"
+  - R_true <= R_consensus + UCB(delta)
+      | finite-sample delta UCB on human set; realized risk <= alpha+UCB(delta) vs GT
+      | FORBIDDEN: stating delta as a point estimate
+  - delta decreases with views to a FLOOR
+      | UCB(delta) width vs n and vs view-correlation rho; floor reported
+      | FORBIDDEN: "delta -> 0", "approaches truth with more views"
+  - Label-free training + calibration
+      | no human masks in train/calib; human set ONLY bounds delta (state size)
+      | FORBIDDEN: "no labels at all"
+  - Matches SAM quality, real-time
+      | onboard Jetson runtime + mask parity "within X mIoU/sym-diff of SAM on
+        ScanNet", stratified by scene difficulty (incl. clutter)
+      | FORBIDDEN: "YOLO >= SAM", "outperforms SAM", bare "matches"
+
+METHOD + CODE REUSE
+  - Hemisphere capture (known poses)            [reuse rig + Open3D]
+  - Multi-view consensus mask (project+vote)    [reuse transfer + small voting pass]
+  - Distill YOLO-seg on consensus               [reuse Ultralytics]
+  - Leakage-free wedge nonconformity score      [NEW, small]
+  - Label-free CRC calibration + UCB(delta)     [NEW, thin; MAPIE/TorchCP]
+
+THEORY (segmentation instance ONLY)
+  R_true <= R_consensus + UCB(delta). Assumptions: exchangeable object units;
+  view-disjoint scoring; triangle-compatible loss (symmetric-difference, NOT IoU);
+  finite-sample delta with correlated-error floor.
+
+EXPERIMENTS (safe-accept set)
+  [SPINE] label-free vs labeled-calibration risk-coverage PARITY on ScanNet/Replica GT.
+  - realized risk <= alpha + UCB(delta) vs human GT; REPORT UCB width.
+  - UCB(delta) width as function of n and rho; report the floor.
+  - leakage sensitivity vs wedge buffer width.
+  - abstention vs TRUE error in clutter.
+  - public-benchmark anchor (ScanNet/Replica) for distillation quality.
+  - onboard runtime/latency/memory (Jetson) vs SAM.
+  - label-hours saved vs supervised parity.
+
+KEY FIGURES
+  parity curve; realized-risk-<=-alpha plot; UCB-width-vs-(n,rho) with floor;
+  wedge-buffer sensitivity; SAM-parity stratified by scene difficulty.
+
+LIMITATIONS
+  consensus-bias floor under correlated SAM errors; hemisphere misses bottom geometry.
+
+REMAINING TO-DO
+  [ ] De-risk consensus->truth bound on small labeled set (GATES submission).
+  [ ] Ensure reported metric = symmetric-difference end-to-end (matches theorem).
+  [ ] State "matches SAM" with explicit tolerance/CI, stratified by difficulty.
+
+================================================================================
+PAPER P1 — SELECTIVE GRASPING: OBJECT-LEVEL CALIBRATED ABSTENTION
+Venue: ICRA 2027 (~Sep 1, 2026). Score 8.0 / safe accept (unanimous).
+Reuse: BITSI octree/IBR, occupancy+EDT, hemisphere->TSDF, Contact-GraspNet/GPD,
+MAPIE/TorchCP. Firewall: fixed/budgeted capture, NO stopping theory; P0 = baseline.
+================================================================================
+
+ABSTRACT (claim-exact)
+  Learned grasp nets output uncalibrated scores. We add a calibrated ABSTENTION
+  option: an object-level conformal/RCPS certificate on OBSERVED grasp success
+  gives in-distribution, finite-sample risk control on the accepted-grasp set.
+  Parts are proposed by a standard medial decomposition (EDT on a fused-TSDF
+  occupancy grid) and screened by a standard analytic grasp test; the contribution
+  is the certificate plus an observability mask that withholds certification on
+  unobserved geometry. We report held-out-object-category coverage tracking the
+  nominal level, and a separate EMPIRICAL study of degradation under category
+  shift. We do not claim to exceed learned nets on raw success; we report selective
+  success / risk-coverage.
+
+CONTRIBUTIONS
+  1. Object-level conformal SELECTIVE grasping with in-distribution risk control.
+  2. Observability-mask abstention (never certify unobserved support voxels).
+  3. Grasp-specific nonconformity score with risk-coverage dominance over a
+     confidence-threshold baseline.
+  4. EDT medial field as a grounded part score (reusing the occupancy grid).
+
+CLAIMS LEDGER (claim | evidence | FORBIDDEN)
+  - In-distribution risk control on accepted set
+      | object-level conformal on OBSERVED success; i.i.d. trials asserted;
+        held-out-object coverage ~ nominal with CIs
+      | FORBIDDEN: "held-out-category guarantee", per-grasp coverage
+  - Category shift = STUDY, not guarantee
+      | OOD degradation curve; show graceful degradation + mask catches OOD fails
+      | FORBIDDEN: any "coverage"/"guarantee"/"certify" token in OOD section
+  - Observability mask withholds on unobserved voxels
+      | ablation: certified-on-observed vs hallucinated geometry
+      | FORBIDDEN: "certifies the full object"
+  - Decomposition + grasp test = standard
+      | cite, mark not-novel
+      | FORBIDDEN: claiming them as contributions
+  - Win on selective success, not raw
+      | risk-coverage AUC vs Contact-GraspNet/GPD on identical captures, with CIs
+      | FORBIDDEN: "first", "beats CGN", "highest grasp success"
+
+METHOD + CODE REUSE
+  - Hemisphere -> TSDF -> occupancy -> EDT medial field r(x)   [reuse + scipy EDT]
+  - BITSI decomposition as part proposer (surface-only IBR)    [reuse unchanged]
+  - Analytic grasp test: friction-cone wrench-span + collision + reachability vs
+    observed cloud; inflate cone by normal-estimation uncertainty   [NEW, small]
+  - Observability mask                                          [NEW, small]
+  - Object-level conformal selective grasping                   [NEW, thin]
+  (Active recapture = engineering only; NO stopping claim.)
+
+THEORY
+  Distance-function diagram bottleneck <= Hausdorff (free). Object-level conformal
+  coverage, in-distribution only. NO stopping theorem (firewall to P2).
+
+EXPERIMENTS (safe-accept set)
+  [SPINE] risk-coverage AUC vs Contact-GraspNet + GPD on IDENTICAL fused TSDF
+          captures; clutter; >=200 real attempts; binomial CIs.
+  [HEADLINE FIGURE] held-out-object-category empirical coverage tracking nominal
+          1-alpha (with CIs and stated n).
+  - OOD degradation study (graceful; observability mask catches a chunk).
+  - EDT<->MAT fidelity gate (stratified by shape class) — run early.
+  - registration-noise robustness of r(x).
+  - observability-mask ablation.
+
+KEY FIGURES
+  held-out coverage-vs-nominal (CIs); risk-coverage AUC dominating CGN threshold;
+  observability-mask abstention examples; EDT<->MAT fidelity.
+
+LIMITATIONS
+  hemisphere bottom occlusion; medial fidelity at voxel scale; in-distribution-only
+  guarantee.
+
+REMAINING TO-DO
+  [ ] >=200 attempts so AUC dominance is statistically significant (CIs).
+  [ ] Scrub OOD section of all coverage/guarantee/certify tokens.
+  [ ] Claim risk-coverage dominance EMPIRICALLY, not as a theorem.
+  [ ] Propagate normal-estimation uncertainty into friction-cone test.
+
+================================================================================
+PAPER P2 — ACTING TO CERTIFY (THE AWARD HORSE)
+Venue: RSS 2027 (~Jan/Feb 2027; draft by Dec 2026). Score 8.0 / safe accept /
+FINALIST-CREDIBLE. Reuse: P1 rig/TSDF/decomposition stack, GUDHI, Open3D
+free-space carving, NBV baselines. Firewall: P2 owns all active/stopping theory.
+================================================================================
+
+ABSTRACT (claim-exact)
+  When has a robot seen enough? We accumulate views into a MONOTONE FREE-SPACE
+  filtration whose persistence diagram provably converges: under Hausdorff-dense
+  sampling, bottleneck(D_k, D_inf) -> 0, and the RETROSPECTIVE quantity
+  bottleneck(D_k, D_{k-1}) gives a terminating stopping rule. This is a
+  DETERMINISTIC GEOMETRIC stopping guarantee — not a probabilistic risk
+  certificate. The same machinery, tracked across motion as a vineyard, discovers
+  articulated parts and joint types. Stopping is near-optimal (<=eps% task-success
+  loss vs exhaustive capture) using fewer views than info-gain NBV, demonstrated
+  on real articulated objects.
+
+CONTRIBUTIONS
+  1. Monotone free-space filtration -> bottleneck-convergent stopping rule
+     (termination + registration-robustness).
+  2. Persistence vineyards for articulated-part + joint-type discovery.
+  3. Near-optimal stopping vs strong NBV baselines.
+
+CLAIMS LEDGER (claim | evidence | FORBIDDEN)
+  - bottleneck(D_k, D_inf) -> 0 under stated sampling
+      | convergence statement + RATE + tameness/Hausdorff assumptions
+      | FORBIDDEN: vague "converges" with no target/rate
+  - Retrospective stopping rule (practical criterion)
+      | termination proof on monotone free-space + empirical decay curve
+      | FORBIDDEN: calling it "risk control"/"distribution-free"; implying the
+        retrospective increment BOUNDS residual to D_inf without increment-decay
+  - Monotonicity on free-space carving
+      | state assumption; report failure under depth-dropout/specular
+      | FORBIDDEN: claiming surface-level monotonicity
+  - Registration-robust
+      | empirical robustness under injected real drift
+      | FORBIDDEN: asserting it without the experiment
+  - Articulation discovery
+      | joint-type accuracy vs Ditto/ScrewNet
+      | FORBIDDEN: "certified" articulation in the conformal/risk sense
+  - "Certify" in the title
+      | define explicitly as GEOMETRIC STABILIZATION, not correctness/risk
+
+METHOD + CODE REUSE
+  - Monotone free-space carving filtration from accumulated views  [reuse Open3D]
+  - Bottleneck convergence stopping rule; termination; reg-robust  [NEW; GUDHI]
+  - Vineyards over joint-angle/time -> part + joint type           [NEW; GUDHI]
+
+THEORY
+  Monotone filtration => nested sublevel sets => convergence; retrospective
+  bottleneck(D_k, D_{k-1}) as a practical stopping criterion (justified by
+  convergence + empirics, NOT a certified bound on residual error unless the
+  increment-decay condition is proved). Near-optimality statement.
+
+EXPERIMENTS (finalist set)
+  [KNOCKOUT] stopping: views-to-converge and task-success-at-stop vs exhaustive,
+             vs info-gain NBV (Isler), coverage, random. Report DISTRIBUTION of
+             eps (view-savings & task-loss) across objects (small AND stable).
+  [DEMO] repeatable, MULTI-TRIAL real articulation demo (open drawer / operate
+         tool guided by temporal persistence) with success rate; joint-type
+         accuracy vs Ditto/ScrewNet.
+  - registration-jump robustness experiment.
+
+KEY FIGURES
+  bottleneck-decay-to-threshold; stopping vs NBV (actions saved at equal success);
+  eps distribution across objects; vineyard tracking an articulating object.
+
+LIMITATIONS
+  monotonicity holds on free-space not surface; coverage-bounded scenes;
+  TDA opacity for a general audience (mitigate with clear exposition).
+
+REMAINING TO-DO
+  [ ] State convergence RATE + exact Hausdorff-density condition.
+  [ ] Frame stopping as practical criterion (or prove increment-decay).
+  [ ] Define "Certify" = geometric stabilization in the text.
+  [ ] Multi-trial demo with success rate (one-shot won't survive RSS).
+
+================================================================================
+PAPER P4 — SELF-CERTIFYING ROBOT PERCEPTION (FLAGSHIP, FUTURE / 2028 / journal)
+================================================================================
+  NOT a 2026 paper. Pursue ONLY if the geometric delta-rate theorem lands AND a
+  single closed-loop cross-task demo exists (same certificate abstaining on a bad
+  mask AND a bad grasp). Otherwise demote to a T-RO/IJRR unification of P1+P3.
+  Must add (>=2): a 3rd instance the theory predicts; public-benchmark cross-task
+  generality; a failure-predicting (not just unifying) theorem.
+
+  THE AWARD/FLAGSHIP LEVER — GEOMETRIC delta-RATE THEOREM (start now, no hardware):
+    delta_bar(n_views, angular_coverage, error-correlation rho) with explicit
+    decay AND an explicit FLOOR set by correlated oracle error. Makes geometry
+    causal to the statistics; turns P1 and P3 into two points on one delta-curve;
+    gives the active loop an objective (drive delta below budget). Would raise P3
+    novelty 4->5 and is the only result that makes P4 award-grade.
+
+================================================================================
+MASTER TO-DO (priority order)
+================================================================================
+  [ ] (gates P3) De-risk consensus->truth bound on a small labeled set.
+  [ ] (no hardware) delta-rate theorem statement + synthetic simulation.
+  [ ] Build shared infra in P1: hemisphere capture + TSDF fusion + calibration.
+  [ ] P3 -> RA-L (Aug). P1 -> ICRA (Sep). P2 draft -> RSS (Dec).
+  [ ] Text discipline sweep per claims ledgers before each submission.
+================================================================================

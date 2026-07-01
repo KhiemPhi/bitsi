@@ -1,0 +1,174 @@
+================================================================================
+P4 — FULL DRAFT (mock; [MOCK] = illustrative placeholder results)
+Part-Masked Pretraining: Geometry-Aware Self-Supervision for Point-Cloud
+Transformers via BITSI Decomposition
+Target: CVPR / 3DV (CV) or CoRL (robot-learning framing)
+NOTE: this P4 is the LEARNED-BACKBONE paper (distinct from the earlier
+"Self-Certifying Robot Perception" flagship idea, which is deferred/renamed).
+================================================================================
+
+ABSTRACT
+Point-cloud transformers (Point-BERT, Point-MAE, PointGPT) tokenize and mask
+GEOMETRY-AGNOSTICALLY: farthest-point centers + kNN balls, masked at random. We ask
+whether a geometric PART PRIOR -- specifically BITSI decomposition (interior-boundary
+-ratio metric + Chebyshev slice profile + octree recursion) -- yields a better
+self-supervised pretext. We do NOT replace tokenization (which would inherit BITSI's
+frame instability); instead we keep standard tokens and introduce PART-MASKED
+autoencoding: whole BITSI parts are masked and reconstructed from the rest, plus two
+geometry-grounded auxiliary objectives (slice-order prediction and IBR-profile
+regression) and an octree-hierarchical masking curriculum. The result is a
+manipulation-oriented backbone that improves part-centric downstream tasks and data
+efficiency. On ShapeNetPart, part-masked pretraining improves fine-tuned mIoU over
+random-masked Point-MAE [MOCK: +1.8 mIoU full-data, +6.3 at 5% labels], and the
+backbone lifts our own downstream grasping/segmentation pipelines. We do not claim
+gains on raw shape classification at scale; the benefit is part/affordance-aware
+representation and label efficiency.
+
+--------------------------------------------------------------------------------
+1. INTRODUCTION
+--------------------------------------------------------------------------------
+Masked point modeling (Point-MAE) reconstructs randomly masked local patches; the
+representation it learns is dominated by LOCAL surface interpolation. For downstream
+tasks that are COMPOSITIONAL -- part segmentation, affordance, grasping,
+articulation -- the useful structure is PARTS and their relations, which random
+local masking does not target.
+
+BITSI decomposition produces part-level, gripper-scale groupings from geometry
+alone, for free (no labels). We use it as a self-supervised STRUCTURAL PRIOR. The
+central design decision is what NOT to do: we do not use BITSI parts as tokens.
+BITSI's parts inherit the instability of the PCA/OBB frame (a 90-degree axis flip on
+near-symmetric shapes reshuffles the whole decomposition), and unstable tokens are
+poison for augmentation-consistent / contrastive pretraining. Instead we keep cheap,
+stable FPS+kNN tokens and use BITSI only to define the MASKING and the pretext
+TARGETS -- where frame instability is tolerable (a different-but-valid part split
+still yields a valid, hard reconstruction task).
+
+Contributions.
+ 1. PART-MASKED autoencoding: mask whole BITSI parts, reconstruct from the rest -- a
+    compositional pretext harder than random-patch masking.
+ 2. Two label-free geometry-grounded auxiliary objectives: slice-order prediction
+    (a canonical sequence along the BITSI slicing axis) and IBR-profile regression.
+ 3. An octree-hierarchical masking curriculum (coarse-part -> fine-part) with
+    geometrically-grounded scales.
+ 4. A manipulation-oriented backbone that improves part/affordance/grasp downstream
+    and data efficiency, and that plugs into our grasping (P1) and segmentation (P3)
+    pipelines.
+
+--------------------------------------------------------------------------------
+2. RELATED WORK
+--------------------------------------------------------------------------------
+Masked/tokenized point transformers: Point-BERT (dVAE tokens over FPS+kNN),
+Point-MAE (random-patch MAE), Point-M2AE (hierarchical masking), PointGPT
+(autoregressive). Structure-aware tokens: Superpoint Transformer; SPT/segment-based
+grouping. Structured masking (images): SemMAE, part-based / attention-guided masking.
+Self-supervised geometric signals: normals/curvature prediction, contrastive
+(PointContrast, CrossPoint). We contribute a PART-prior masking + geometry-grounded
+pretext from BITSI, chosen to sidestep frame-instability by decoupling masking from
+tokenization.
+
+--------------------------------------------------------------------------------
+3. METHOD
+--------------------------------------------------------------------------------
+3.1 Backbone + tokens (standard). Standard point transformer; tokens = FPS centers +
+kNN groups (unchanged, stable under augmentation). BITSI is applied OFFLINE and
+cached per shape.
+3.2 BITSI part prior (reused, standard). Per shape, run BITSI: IBR metric per slice,
+Chebyshev-smoothed profile for boundaries, octree recursion into parts. Output: a
+part label per point + a hierarchy (octree levels) + the 1D IBR profile + the slice
+order.
+3.3 PART-MASKED autoencoding. Assign each token to the BITSI part its center falls
+in; MASK all tokens of a sampled subset of parts (whole-part masking, mask ratio by
+part not by token); reconstruct masked parts from visible ones (Chamfer/EMD
+reconstruction head as in Point-MAE). Because whole parts vanish, the model must use
+inter-part structure, not local continuity.
+3.4 Auxiliary objectives (label-free).
+ (a) Slice-order prediction: the BITSI slicing axis induces a canonical order over
+     slabs; predict the slab index of masked tokens (a geometry-grounded ordering
+     signal that point transformers otherwise lack).
+ (b) IBR-profile regression: regress the 1D IBR-vs-position profile (the graspability
+     signature) from the visible tokens.
+3.5 Octree-hierarchical curriculum. Start with coarse-part masking (shallow octree),
+progress to fine-part masking (deep octree) -- multi-scale, geometrically grounded.
+3.6 Frame-instability handling. Masking/targets, NOT tokens, depend on BITSI; a
+frame flip yields a different-but-valid part split -> a different-but-valid pretext
+instance, which is benign (even beneficial as augmentation). Tokens stay canonical.
+
+--------------------------------------------------------------------------------
+4. WHY IT HELPS / SCOPE (honest)
+--------------------------------------------------------------------------------
+Helps: compositional pretext forces part-relational features; label-free geometric
+targets add structure; hierarchy gives multi-scale. Expected wins: part
+segmentation, affordance, grasp/articulation downstream, and DATA EFFICIENCY (fewer
+labels). Scope/caveats: (i) BITSI is object-centric and gripper-scale -- gains are
+expected on object-centric corpora (ShapeNet, Objaverse-LVIS), not scene pretraining
+(ScanNet) without adaptation; (ii) at large scale, imposed structure need not beat
+learned structure on RAW classification -- we do not claim ModelNet SOTA; (iii)
+precompute cost: BITSI per shape is heavier than FPS+kNN, mitigated by offline
+caching.
+
+--------------------------------------------------------------------------------
+5. EXPERIMENTS  ([MOCK] numbers illustrative)
+--------------------------------------------------------------------------------
+5.1 Setup. Pretrain on ShapeNet (object-centric); backbone = Point-MAE transformer;
+BITSI decomposition cached offline (bitsi_slicer). Compare masking strategies with
+everything else fixed.
+5.2 Main: part-masked vs random-masked MAE, fine-tuned on ShapeNetPart segmentation.
+  Pretext                         mIoU (full) up   mIoU (5% labels) up
+  From scratch                    82.1 [MOCK]      66.4 [MOCK]
+  Point-MAE (random mask)         85.7 [MOCK]      74.9 [MOCK]
+  Ours (part-mask)                87.5 [MOCK]      81.2 [MOCK]
+  Ours (part-mask + aux + octree) 88.0 [MOCK]      82.6 [MOCK]
+Largest gains in the LOW-LABEL regime (part-relational prior pays off most).
+5.3 Ablations. part-mask vs random-mask (isolate the masking); +slice-order aux;
++IBR-profile aux; +octree curriculum -- each contribution's marginal mIoU.
+5.4 Downstream to the program. Backbone features fed to P1 (grasping) and P3
+(segmentation): [MOCK] P1 risk-coverage AUC +0.03; P3 label-free parity reached with
+fewer views. Shows the pretraining is manipulation-oriented, not just a benchmark win.
+5.5 Robustness / cost. Frame-flip augmentation study (part-mask is stable to it by
+design); pretraining wall-clock incl. offline BITSI caching; ModelNet classification
+reported as a NON-headline control [MOCK: on par with Point-MAE, no claim].
+
+--------------------------------------------------------------------------------
+6. LIMITATIONS
+--------------------------------------------------------------------------------
+Object-centric prior (scene pretraining needs adaptation). BITSI precompute cost
+(cached). No raw-classification-at-scale claim. Gains concentrate on part-centric /
+low-label downstream. Auxiliary targets (IBR, slice order) are BITSI-frame-dependent
+and thus noisier than the part-mask signal.
+
+--------------------------------------------------------------------------------
+7. CONCLUSION
+--------------------------------------------------------------------------------
+Using BITSI as a self-supervised STRUCTURAL PRIOR -- for masking and pretext targets,
+not tokenization -- yields a part-aware, manipulation-oriented point-transformer
+backbone that improves compositional downstream tasks and label efficiency, and
+feeds the rest of the program's certified pipelines.
+
+--------------------------------------------------------------------------------
+8. CODE REUSE (implementation map -- for the authors)
+--------------------------------------------------------------------------------
+Reuse from the existing bitsi repo (run OFFLINE, cache per shape):
+ - bitsi_slicer/bitsi_slicer/slicing.py:
+     slice_object_bbox(), accumulate_slices(), fuse_slices()  -> part labels
+     bitsi_metric(), get_overall_ibr_ratio()  -> IBR-profile target (3.4b)
+     slice order from the slicing axis -> slice-order target (3.4a)
+ - main.py:
+     SegmentNode, build_segmentation_tree(), apply_slicing_to_children()  -> octree
+     levels for the hierarchical curriculum (3.5)
+     load_point_cloud_shapenetpart()  -> ShapeNet/ShapeNetPart loading + GT for eval
+     calculate_iou_metrics()  -> downstream mIoU eval (5.2)
+ - bitsi_slicer/bitsi_slicer/occupancy.py, point_cloud.py  -> geometry utilities
+NEW thin modules to add:
+ - precompute_bitsi.py : cache part labels + IBR profile + slice order + octree per shape
+ - part_mask.py        : whole-part masking collator on top of FPS+kNN tokens (3.3)
+ - aux_heads.py        : slice-order + IBR-profile prediction heads (3.4)
+External libraries / code:
+ - a Point-MAE / Point-M2AE / PointGPT reference implementation (backbone + MAE head)
+ - PyTorch3D or Open3D for FPS + kNN grouping (standard tokens)
+ - ShapeNet / ShapeNetPart (pretrain + part-seg eval); Objaverse-LVIS (scale-up option)
+De-risk experiment FIRST (approx 1 week, no new theory):
+ - swap ONLY the masking in an off-the-shelf Point-MAE (random -> BITSI part-mask),
+   pretrain on ShapeNet, fine-tune on ShapeNetPart; if part-mask beats random-mask
+   in mIoU (esp. low-label), the paper is real. Wire slice_object_bbox/SegmentNode
+   into part_mask.py; leave the backbone untouched.
+================================================================================

@@ -1,0 +1,196 @@
+================================================================================
+P2 — FULL DRAFT v2 (reviewer fixes applied; [MOCK] = illustrative placeholder)
+Acting to Certify: Convergence-Motivated Active Decomposition and
+Articulation Discovery
+Target: RSS 2027
+v2 CHANGES: (i) explicit convergence RATE bottleneck(D_k,D_inf) <= C*h_k via the
+stability theorem; (ii) monotone-increment-decay condition stated FORMALLY + a
+diagnostic (fraction of non-monotone increments); (iii) title/abstract demoted from
+"provably converges / terminating guarantee" to "convergence + a convergence-
+motivated stopping criterion"; (iv) convergence is to the OBSERVABLE reconstruction;
+(v) NBV baselines given a FAIR stopping rule (stop-vs-stop); (vi) abstract eps fixed
+to median/percentile (no "<=4%" contradiction).
+================================================================================
+
+ABSTRACT
+When has a robot seen enough OF THE OBSERVABLE SCENE? We accumulate views into a
+MONOTONE FREE-SPACE filtration whose persistence diagram converges: if successive
+surface samples are h_k-dense (Hausdorff), then bottleneck(D_k, D_inf) <= C*h_k
+(Sec. 4), so the diagram converges to that of the observable reconstruction. The
+retrospective increment bottleneck(D_k, D_{k-1}) is a measurable quantity; we use
+it as a convergence-MOTIVATED stopping CRITERION (it upper-bounds the residual only
+under a stated monotone-increment-decay condition, which we check empirically).
+This is a DETERMINISTIC GEOMETRIC criterion -- about geometric stabilization, not
+probabilistic risk control. The same persistence machinery, tracked across motion
+as a vineyard, discovers articulated parts and joint types. Against next-best-view
+baselines EQUIPPED WITH THEIR OWN STOPPING RULES, our criterion stops earlier at
+equal task success [MOCK: 6.4 vs 9.8 views at 0.94 success]; task-success loss vs
+exhaustive capture is [MOCK] median 2.3% (90th-pct 4.1%); joint-type accuracy is
+[MOCK] 88% (training-free). "Certify" denotes geometric stabilization of the
+observable reconstruction, not correctness of any downstream estimate.
+
+--------------------------------------------------------------------------------
+1. INTRODUCTION
+--------------------------------------------------------------------------------
+Active perception must decide when more views stop paying off. Next-best-view (NBV)
+methods optimize an information-gain surrogate but typically stop on a heuristic
+budget or gain threshold with no convergence statement. We give a stopping
+criterion motivated by a convergence theorem with an explicit rate.
+
+As views accumulate into a fused free-space representation, the set of voxels known
+to be free GROWS MONOTONICALLY; the corresponding sublevel-set filtration is
+genuinely nested, so its persistence diagram converges -- and, via the stability
+theorem, at a rate set by surface-sample density. The increment between successive
+reconstructions, bottleneck(D_k, D_{k-1}), is measurable and RETROSPECTIVE, so
+thresholding it gives a terminating criterion free of optional-stopping pathology.
+We are explicit that this increment upper-bounds the residual to D_inf only under a
+stated decay condition; absent that, it is a convergence-motivated heuristic, and
+we report how often the condition holds.
+
+The same machinery generalizes across MOTION: tracking the diagram as a function of
+an articulation parameter (a vineyard) identifies articulated parts and joint
+types, training-free.
+
+Contributions.
+ 1. A monotone free-space filtration with an explicit convergence RATE
+    (bottleneck <= C*h_k), and a convergence-motivated retrospective stopping
+    criterion with a formally-stated (and empirically-checked) validity condition.
+ 2. Persistence vineyards for training-free articulated-part / joint-type discovery.
+ 3. Fair comparison vs NBV baselines equipped with their own stopping rules.
+Firewall vs P1. P1 uses FIXED-budget capture and claims no stopping theory; P2 owns
+all active-perception / stopping theory and the articulation results.
+
+--------------------------------------------------------------------------------
+2. RELATED WORK
+--------------------------------------------------------------------------------
+NBV / active perception: Connolly'85; info-gain NBV [Isler'16]; receding-horizon
+[Bircher'16]; multi-view picking [Morrison'19]; interactive perception [Bohg'17].
+Persistence / vineyards: stability [Cohen-Steiner-Edelsbrunner-Harer'07]; vineyards
+[Cohen-Steiner-Edelsbrunner-Morozov'06]; distance-function persistence
+[Chazal-Cohen-Steiner-Lieutier]. Articulation: Ditto [Jiang'22]; GAPartNet
+[Geng'23]; ScrewNet (learned; we are training-free).
+
+--------------------------------------------------------------------------------
+3. METHOD
+--------------------------------------------------------------------------------
+3.1 Monotone free-space filtration. Each view carves known-free space into a fused
+volume. We filter on the KNOWN-FREE-SPACE confidence (which only grows with views),
+NOT the surface estimate (whose zero-crossing moves). Sublevel sets are therefore
+genuinely nested across view index k.
+3.2 Convergence and stopping. D_k = persistence diagram after k views. Nestedness +
+boundedness give convergence; the stability theorem gives the rate (Sec. 4). We STOP
+when bottleneck(D_k, D_{k-1}) < tau; this increment is computed from observed
+reconstructions. Registration robustness: loop-closure/pose-graph jumps cause
+non-local field changes; we use a median-of-windows increment to discount them.
+3.3 Articulation via vineyards. Parameterize the filtration by articulation state
+(joint angle / interaction time); track the diagram as a vineyard. A feature whose
+birth/death moves coherently with the state is an articulated part; the geometry of
+its vine (linear vs constant displacement) distinguishes prismatic vs revolute.
+
+--------------------------------------------------------------------------------
+4. THEORY (deterministic geometric)
+--------------------------------------------------------------------------------
+Assumption A1 (dense capture). The view schedule drives the surface-sample Hausdorff
+density h_k -> 0 on the OBSERVABLE region as views accumulate. This is a property of
+the capture process, not delivered by the theorem; adversarial/degenerate schedules
+can violate it.
+
+Proposition 1 (convergence with rate). Under A1, with the accumulated free-space
+filtration nested, for the distance-function filtration,
+   bottleneck(D_k, D_inf^obs) <= C * h_k,
+where D_inf^obs is the diagram of the observable reconstruction and C depends only
+on ambient dimension. Hence D_k -> D_inf^obs as h_k -> 0. (Proof: stability of
+persistence diagrams [Cohen-Steiner et al.'07] applied to the nested distance
+function; the bound is the Hausdorff-to-bottleneck inequality.)
+
+Definition (geometric-increment-decay). The increment sequence
+e_k = bottleneck(D_k, D_{k-1}) satisfies GEOMETRIC decay if e_k <= rho^k * e_0 for
+some rho < 1 (a checkable single-parameter form, fit per scene from observed
+increments).
+
+Proposition 2 (residual bound, conditional -- concrete g). Under geometric decay,
+by the triangle inequality and the geometric series,
+   bottleneck(D_k, D_inf^obs) <= sum_{j>k} e_j <= e_k * rho/(1-rho) =: g(e_k);
+thus STOPPING at e_k < tau bounds the residual by g(tau) = tau * rho/(1-rho) -- a
+NUMERIC bound. WITHOUT decay, e_k bounds nothing about D_inf^obs in general (a late
+view may reveal a large feature); we then present the rule as a convergence-MOTIVATED
+criterion and report (Sec. 5.3) the empirical fraction of trajectories on which
+decay holds.
+
+Scope. A geometric stabilization statement about the OBSERVABLE reconstruction; NOT
+distribution-free risk control and not a claim of task sufficiency. "Certify" =
+the observable reconstruction has geometrically stabilized.
+
+--------------------------------------------------------------------------------
+5. EXPERIMENTS  ([MOCK] numbers illustrative)
+--------------------------------------------------------------------------------
+5.1 Setup. Franka + wrist depth; hemisphere + articulation trajectories; Open3D
+free-space fusion; GUDHI for cubical persistence + vineyards. Static set (40 objects)
+for stopping; articulated set (drawers, scissors, laptops, cabinets) from
+PartNet-Mobility/GAPartNet + 10 real objects.
+5.2 Stopping (FAIR comparison). We report each baseline's FULL views-vs-success
+FRONTIER (not a single tuned stop point), then read views-to-stop at MATCHED
+task-success; ALL methods use a stopping rule (info-gain NBV: gain-threshold stop;
+coverage NBV: coverage target; random: budget).
+  Method            Views-to-stop down   TaskSucc@stop up
+  Random            16.5 [MOCK]          0.86 [MOCK]
+  Coverage NBV (stop) 11.7 [MOCK]        0.91 [MOCK]
+  Info-gain NBV (stop) 9.8 [MOCK]        0.93 [MOCK]
+  Ours (bottleneck)  6.4 [MOCK]          0.94 [MOCK]
+[MOCK] eps = task-success loss vs exhaustive: median 2.3%, 90th-pct 4.1%
+(full distribution reported, not just median).
+5.3 Decay-condition diagnostic. Fraction of trajectories on which e_k is eventually
+non-increasing (the Prop-2 precondition): [MOCK] 86%; on the remaining 14%, the
+criterion still stops but the residual bound does not formally apply -- reported as
+a limitation, not hidden.
+5.4 Bottleneck decay curve. e_k vs k decays below tau by [MOCK] k~6 on average;
+empirical support for Prop 1/2.
+5.5 Articulation (LOAD-BEARING result). Joint-type CONFUSION MATRIX
+(revolute/prismatic/static) + per-class accuracy vs Ditto/ScrewNet
+(PartNet-Mobility + real); revolute-vs-prismatic separation read from vine geometry
+(linear vs constant displacement of the vine). [MOCK] ours 88% mean vs Ditto 90%
+(learned) / ScrewNet 85%; ours training-free. Multi-trial real demo (open drawer,
+operate scissors, tilt laptop): [MOCK] 9/10 trials terminate and recover the joint.
+5.6 Registration-jump robustness. Inject pose-graph jumps; median-of-windows
+increment keeps premature-stop rate at [MOCK] 6% vs 27% for naive increment.
+
+--------------------------------------------------------------------------------
+6. LIMITATIONS
+--------------------------------------------------------------------------------
+Convergence is to the OBSERVABLE reconstruction (undersides never observable);
+"seen enough" is relative to the observable set. The residual bound (Prop 2) holds
+only under the decay condition, which fails on a minority of trajectories (5.3).
+Monotonicity holds on free-space, not the surface estimate. TDA exposition needs
+care for a general audience.
+
+--------------------------------------------------------------------------------
+7. CONCLUSION
+--------------------------------------------------------------------------------
+A monotone free-space filtration turns "have I seen enough of the observable scene?"
+into a convergence-motivated, terminating, deterministic-geometric stopping
+criterion with an explicit rate; the same persistence machinery, tracked across
+motion, discovers articulation without training.
+
+--------------------------------------------------------------------------------
+8. CODE REUSE (implementation map -- for the authors)
+--------------------------------------------------------------------------------
+Reuse from the existing bitsi repo:
+ - bitsi_slicer/bitsi_slicer/occupancy.py:
+     OccupancyStruct  -> base occupancy grid; ADAPT to MONOTONE free-space carving
+     (accumulate known-free voxels across views; never un-set) for the filtration
+ - main.py:
+     SegmentNode, build_segmentation_tree()  -> part structure for per-part vines
+     detect_and_break()  -> seam/part splitting reused for articulation candidates
+ - bitsi_slicer/bitsi_slicer/point_cloud.py:
+     PointCloud, bounding boxes  -> per-state geometry handling
+NEW thin modules to add:
+ - freespace_filtration.py : accumulate known-free voxels -> nested sublevel sets
+ - stopping.py            : bottleneck(D_k,D_{k-1}) increment + median-of-windows
+ - vineyard.py            : persistence over articulation parameter -> joint type
+External libraries:
+ - Open3D: ScalableTSDFVolume + free-space carving, registration (pose graph)
+ - GUDHI: CubicalComplex persistence; Vineyards (time-varying persistence)
+   (alternatives: Ripser/ripser.py, scikit-tda for cross-checks)
+ - PartNet-Mobility / GAPartNet loaders for the articulated set
+ - NBV baselines: implement Isler info-gain NBV + a gain-threshold STOP for fairness
+================================================================================
