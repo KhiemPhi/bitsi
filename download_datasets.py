@@ -9,11 +9,21 @@ Papers:
   P2  Acting to Certify                  (RSS)   — articulated objects + articulation baselines
   P3  Geometry-Calibrated Selective Seg  (RA-L)  — ScanNet/Replica + SAM2 + YOLO11-seg
   P4  Part-Masked Pretraining            (CVPR)  — ShapeNet(Part) + ModelNet40 + Point-MAE
+  P5  Learned Cutting Policy             (CoRL)  — RL decomposition + target-part grasp sim
+
+P5 REUSE (already in the registry — do NOT re-download):
+  - point clouds + part labels : P4/shapenetpart  (training env reward = mIoU vs part ids)
+  - matching meshes            : P4/shapenetcore   (grasp validation on the trained objects; gated)
+  - grasp-metric cross-check   : P1/acronym        (validate analytic force-closure vs annotations)
+  - sim->real object set       : P1/ycb            (physical objects for the Kinova)
+P5 NEW entries below add: Google Scanned Objects, EGAD! eval set, and the Kinova Gen3 +
+Robotiq 2F-85 URDF used by bitsi_sim/ for headless PyBullet grasp validation.
 
 Usage:
   python download_datasets.py                      # dry-run, all papers, plan only
   python download_datasets.py --paper P3           # only P3 datasets
   python download_datasets.py --paper P3 --execute # actually download P3's fetchable items
+  python download_datasets.py --paper P5 --execute # cutting-policy sim assets (+ see P5 REUSE)
   python download_datasets.py --include-optional    # also plan optional/large extras
   python download_datasets.py --list                # print the registry as a table and exit
 
@@ -231,6 +241,47 @@ REGISTRY: list[Dataset] = [
         optional=True,
         notes="Second articulation baseline. VERIFY exact repo.",
     ),
+
+    # ----------------------------- P5 (learned cutting policy) ------------
+    # NOTE: P5 also depends on P4/shapenetpart, P4/shapenetcore, P1/acronym,
+    #       P1/ycb (see the "P5 REUSE" block in the module docstring).
+    Dataset(
+        key="kinova-ros-kortex",
+        paper="P5",
+        method="git",
+        dest="P5/ros_kortex",
+        url="https://github.com/Kinovarobotics/ros_kortex.git",
+        notes=(
+            "Kinova Gen3 arm + Robotiq 2F-85 gripper description. bitsi_sim/ loads the "
+            "2F-85 URDF/meshes for headless grasp validation (85mm stroke). Gripper URDF "
+            "under kortex_description/grippers/robotiq_2f_85/; arm under "
+            "kortex_description/arms/gen3/. Only *_description is needed (no ROS build)."
+        ),
+    ),
+    Dataset(
+        key="google-scanned-objects",
+        paper="P5",
+        method="manual",
+        dest="P5/gso",
+        url="https://app.gazebosim.org/GoogleResearch/fuel/collections/Scanned%20Objects%20by%20Google%20Research",
+        notes=(
+            "Watertight, physics-ready scanned meshes for sim->real. Hosted on Gazebo Fuel; "
+            "bulk-fetch with the fuel-tools CLI or `pip install owl-vision`/a fuel download "
+            "script (VERIFY). ~1030 objects. Use as the primary sim eval set alongside "
+            "P4/shapenetcore for train-consistency."
+        ),
+    ),
+    Dataset(
+        key="egad-eval",
+        paper="P5",
+        method="http",
+        dest="P5/egad",
+        # 49-object evaluation set spanning grasp difficulty; 3D-printable for the real Kinova.
+        url="https://data.researchdatafinder.qut.edu.au/dataset/egad/resource/egad_eval_set.zip",  # VERIFY exact asset
+        unpack=True,
+        optional=True,
+        notes="EGAD! eval set (49 objects, graded grasp difficulty). VERIFY the current mirror/URL.",
+    ),
 ]
 
 
@@ -311,7 +362,7 @@ def handle(ds: Dataset, root: Path, execute: bool) -> None:
 
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("--paper", choices=["P1", "P2", "P3", "P4"], help="limit to one paper")
+    ap.add_argument("--paper", choices=["P1", "P2", "P3", "P4", "P5"], help="limit to one paper")
     ap.add_argument("--root", type=Path, default=DEFAULT_ROOT, help=f"download root (default {DEFAULT_ROOT})")
     ap.add_argument("--execute", action="store_true", help="actually download (default: dry-run/plan only)")
     ap.add_argument("--include-optional", action="store_true", help="also handle optional/large extras")

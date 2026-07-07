@@ -3,3 +3,5 @@ __pycache__/
 dist/
 build/
 *.png
+bitsi_sim/_cache/
+datasets/
