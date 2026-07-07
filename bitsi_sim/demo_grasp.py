@@ -19,6 +19,7 @@ from .config import GripperSpec, SimConfig
 from .geometry import Grasp
 from .gripper import FloatingGripper
 from .grasp_eval import evaluate_grasp, evaluate_target_part_grasp
+from .recorder import FrameRecorder
 from .world import BulletWorld
 
 
@@ -39,12 +40,23 @@ def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--gui", action="store_true", help="show GUI (needs X); default headless")
     ap.add_argument("--egl", action="store_true", help="load eglRenderer (GPU offscreen)")
+    ap.add_argument("--record", metavar="PATH", help="save a .mp4 or .gif of the run (headless)")
+    ap.add_argument("--fps", type=int, default=30, help="playback fps (default 30)")
+    ap.add_argument("--stride", type=int, default=8,
+                    help="grab 1 frame per N sim steps; higher = faster/shorter video (default 8)")
     args = ap.parse_args()
 
     cfg = SimConfig(gui=args.gui, use_egl=args.egl)
     spec = GripperSpec()
 
     with BulletWorld(cfg) as world:
+        rec = None
+        if args.record:
+            rec = FrameRecorder(world, stride=args.stride)
+            world.attach_recorder(rec)
+            speed = args.fps * args.stride * cfg.timestep
+            print(f"recording -> {args.record}  (fps={args.fps}, stride={args.stride}, "
+                  f"~{speed:.1f}x real time)")
         he = (0.02, 0.02, 0.03)
         obj = world.add_box(half_extents=he, mass=0.3, lateral_friction=1.5)
         world.step(120)  # let it settle
@@ -80,6 +92,11 @@ def main() -> int:
               f"on_target_frac={res2['on_target_frac']:.2f}  "
               f"collided_nontarget={res2['collided_nontarget']}")
         gr.remove()
+
+        if rec is not None:
+            path = rec.save(args.record, fps=args.fps)
+            dur = len(rec.frames) / args.fps
+            print(f"saved {len(rec.frames)} frames -> {path}  ({dur:.1f}s @ {args.fps}fps)")
 
     print("OK: headless sim ran end-to-end.")
     return 0

@@ -68,6 +68,35 @@ OK: headless sim ran end-to-end.
 Both cases lift deterministically; the target-part classifier assigns each contact
 to its nearest part and flags a contact that seats on a non-target part.
 
+## Recording video/GIF (headless)
+
+PyBullet's built-in MP4 logger needs the GUI, so it can't run under `DIRECT`.
+`recorder.FrameRecorder` instead grabs frames via `getCameraImage` (GPU with
+`--egl`, else CPU TinyRenderer) and encodes with imageio:
+
+```bash
+pip install imageio imageio-ffmpeg
+python -m bitsi_sim.demo_grasp --egl --record run.mp4 --fps 30 --stride 8   # ~1x
+python -m bitsi_sim.demo_grasp       --record run.gif --fps 30 --stride 16  # ~2x, GIF
+```
+
+Speed = `fps * stride * timestep` (sim runs at 240 steps/s). To **speed up** a long
+run, raise `--stride` (skip more sim steps) and/or `--fps`. In code, attach a
+recorder and any `world.step(...)` — including inside `evaluate_grasp` — is captured:
+
+```python
+from bitsi_sim import BulletWorld, SimConfig, FrameRecorder
+w = BulletWorld(SimConfig(use_egl=True))
+rec = FrameRecorder(w, stride=16); w.attach_recorder(rec)
+...                                  # run rollouts / a training episode
+rec.save("episode.mp4", fps=30)
+```
+
+For a *learning-progress* montage, record one rollout every K training episodes
+(reuse the same recorder so frames accumulate, or save per-episode clips and
+concatenate with ffmpeg). Training curves (reward, mIoU, grasp success) are better
+shown as a matplotlib plot alongside the rollout video.
+
 ## Real meshes
 
 For grasp validation on real objects, load a mesh with VHACD collision:

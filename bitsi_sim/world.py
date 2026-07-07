@@ -37,6 +37,8 @@ class BulletWorld:
         p.setPhysicsEngineParameter(numSolverIterations=self.cfg.solver_iters)
         self.plane_id = p.loadURDF("plane.urdf")
         self.table_id = self._make_table()
+        self.recorder = None          # optional FrameRecorder (see recorder.py)
+        self._step_count = 0
 
     # -- setup ------------------------------------------------------------
     def _connect(self) -> int:
@@ -77,9 +79,16 @@ class BulletWorld:
     def object_z(self, body_id: int) -> float:
         return p.getBasePositionAndOrientation(body_id)[0][2]
 
+    def attach_recorder(self, recorder) -> None:
+        """Register a FrameRecorder; step() then grabs a frame every recorder.stride steps."""
+        self.recorder = recorder
+
     def step(self, n: int = 1) -> None:
         for _ in range(n):
             p.stepSimulation()
+            self._step_count += 1
+            if self.recorder is not None and self._step_count % self.recorder.stride == 0:
+                self.recorder.capture()
 
     def reset(self) -> None:
         p.resetSimulation()
