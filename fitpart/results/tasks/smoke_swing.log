@@ -1,0 +1,7 @@
+/home/khiem/miniconda3/envs/graspsim/lib/python3.11/site-packages/numpy/_core/fromnumeric.py:3824: RuntimeWarning: Mean of empty slice
+  return _methods._mean(a, axis=axis, dtype=dtype,
+/home/khiem/miniconda3/envs/graspsim/lib/python3.11/site-packages/numpy/_core/_methods.py:142: RuntimeWarning: invalid value encountered in scalar divide
+  ret = ret.dtype.type(ret / rcount)
+/home/khiem/bitsi/fitpart/bitsi2/section.py:107: RuntimeWarning: divide by zero encountered in log
+  bic = loss + (2 * n + 1) * np.log(len(y))
+{"task": "swing", "key": "obj_000003", "grasp_handle_frac": 0.0, "success": true, "stage": "executed", "rot": 111.17406842115584, "held": true}

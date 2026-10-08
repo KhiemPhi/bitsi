@@ -1,0 +1,117 @@
+{
+ "title": [
+  "Language command -> task screw -> Kinova Gen3 + Robotiq 2F-85",
+  "SigLIP (frozen) + MLP picks the task, direction and amount; BITSI finds the screw",
+  "12 executed commands (2 others had no feasible plan); all parsed correctly, 9/14 succeeded"
+ ],
+ "clips": [
+  {
+   "video": "results/lang/e2e/cmd00_turn.mp4",
+   "card": [
+    "\"open the bottle for me\"",
+    "model -> task: turn, direction: +1, amount: 180 deg, part: cap",
+    "BITSI -> screw axis / point on the robot's point cloud -> Kinova",
+    "outcome: SUCCESS"
+   ]
+  },
+  {
+   "video": "results/lang/e2e/cmd01_turn.mp4",
+   "card": [
+    "\"tighten the cap on the bottle\"",
+    "model -> task: turn, direction: -1, amount: 180 deg, part: cap",
+    "BITSI -> screw axis / point on the robot's point cloud -> Kinova",
+    "outcome: SUCCESS"
+   ]
+  },
+  {
+   "video": "results/lang/e2e/cmd02_hinge.mp4",
+   "card": [
+    "\"lift the lid of that box\"",
+    "model -> task: hinge, direction: +1, amount: 70 deg, part: lid",
+    "BITSI -> screw axis / point on the robot's point cloud -> Kinova",
+    "outcome: SUCCESS"
+   ]
+  },
+  {
+   "video": "results/lang/e2e/cmd03_slide.mp4",
+   "card": [
+    "\"pull the drawer open about 10 cm\"",
+    "model -> task: slide, direction: +1, amount: 10.0 cm, part: handle",
+    "BITSI -> screw axis / point on the robot's point cloud -> Kinova",
+    "outcome: SUCCESS"
+   ]
+  },
+  {
+   "video": "results/lang/e2e/cmd04_slide.mp4",
+   "card": [
+    "\"close the drawer\"",
+    "model -> task: slide, direction: -1, amount: 12 cm, part: handle",
+    "BITSI -> screw axis / point on the robot's point cloud -> Kinova",
+    "outcome: SUCCESS"
+   ]
+  },
+  {
+   "video": "results/lang/e2e/cmd05_press.mp4",
+   "card": [
+    "\"press the button\"",
+    "model -> task: press, direction: +1, amount: 0.7 cm, part: button",
+    "BITSI -> screw axis / point on the robot's point cloud -> Kinova",
+    "outcome: SUCCESS"
+   ]
+  },
+  {
+   "video": "results/lang/e2e/cmd06_squeeze.mp4",
+   "card": [
+    "\"squeeze the tongs\"",
+    "model -> task: squeeze, direction: +1, amount: 20 deg, part: arm",
+    "BITSI -> screw axis / point on the robot's point cloud -> Kinova",
+    "outcome: FAILED"
+   ]
+  },
+  {
+   "video": "results/lang/e2e/cmd07_pivot.mp4",
+   "card": [
+    "\"tilt the box back 45 degrees\"",
+    "model -> task: pivot, direction: +1, amount: 45.0 deg, part: body",
+    "BITSI -> screw axis / point on the robot's point cloud -> Kinova",
+    "outcome: SUCCESS"
+   ]
+  },
+  {
+   "video": "results/lang/e2e/cmd09_swing.mp4",
+   "card": [
+    "\"swing the hammer\"",
+    "model -> task: swing, direction: +1, amount: 40 deg, part: handle",
+    "BITSI -> screw axis / point on the robot's point cloud -> Kinova",
+    "outcome: FAILED"
+   ]
+  },
+  {
+   "video": "results/lang/e2e/cmd11_stir.mp4",
+   "card": [
+    "\"stir with the whisk\"",
+    "model -> task: stir, direction: +1, amount: 120 deg, part: handle",
+    "BITSI -> screw axis / point on the robot's point cloud -> Kinova",
+    "outcome: SUCCESS"
+   ]
+  },
+  {
+   "video": "results/lang/e2e/cmd12_cut.mp4",
+   "card": [
+    "\"slice with the knife\"",
+    "model -> task: cut, direction: +1, amount: 10 cm, part: handle",
+    "BITSI -> screw axis / point on the robot's point cloud -> Kinova",
+    "outcome: SUCCESS"
+   ]
+  },
+  {
+   "video": "results/lang/e2e/cmd13_handover.mp4",
+   "card": [
+    "\"hand me the screwdriver\"",
+    "model -> task: handover, direction: +1, amount: default amount, part: body",
+    "BITSI -> screw axis / point on the robot's point cloud -> Kinova",
+    "outcome: FAILED"
+   ]
+  }
+ ]
+}

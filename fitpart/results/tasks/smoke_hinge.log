@@ -1,0 +1,1 @@
+{"task": "hinge", "key": "100", "axis_err_deg": 0.5251134305225238, "line_dist_cm": 1.210610058862371, "grasp_part_gt": "knob", "success": true, "stage": "executed", "joint_change": 66.52328257363685}

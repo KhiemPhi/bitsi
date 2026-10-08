@@ -1,0 +1,34 @@
+{
+ "commands": [
+  "open the bottle for me",
+  "tighten the cap on the bottle",
+  "lift the lid of that box",
+  "pull the drawer open about 10 cm",
+  "close the drawer",
+  "press the button",
+  "squeeze the tongs",
+  "tilt the box back 45 degrees",
+  "pick up the drill",
+  "swing the hammer",
+  "scoop some soup with the ladle",
+  "stir with the whisk",
+  "slice with the knife",
+  "hand me the screwdriver"
+ ],
+ "predicted": [
+  "turn|+1",
+  "turn|-1",
+  "hinge|+1",
+  "slide|+1",
+  "slide|-1",
+  "press|+1",
+  "squeeze|+1",
+  "pivot|+1",
+  "lift|+1",
+  "swing|+1",
+  "scoop|+1",
+  "stir|+1",
+  "cut|+1",
+  "handover|+1"
+ ]
+}

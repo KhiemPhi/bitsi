@@ -1,0 +1,1 @@
+{"task": "squeeze", "key": "100", "axis_err_deg": 0.0021045806125088787, "line_dist_cm": 2.414179544349189, "grasp_part_gt": "upper_arm", "success": false, "stage": "executed", "joint_change": -9.842958898863108}

@@ -1,0 +1,14 @@
+WARNING: Attach conflict when attaching 'robotiq_2f85' to 'gen3', policy is 'warning'
+impratio: parent has 1 (default), child has 10, keeping parent value
+cone: parent has 0 (default), child has 1, keeping parent value
+
+/home/khiem/bitsi/fitpart/sim/kinova_scene.py:34: UserWarning: Attach conflict when attaching 'robotiq_2f85' to 'gen3', policy is 'warning'
+impratio: parent has 1 (default), child has 10, keeping parent value
+cone: parent has 0 (default), child has 1, keeping parent value
+  return spec.compile()
+0 / 81 1 distinct
+20 / 81 14 distinct
+40 / 81 22 distinct
+60 / 81 39 distinct
+80 / 81 53 distinct
+finished

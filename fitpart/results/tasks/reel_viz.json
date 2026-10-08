@@ -1,0 +1,117 @@
+{
+ "title": [
+  "Task screws with the Kinova Gen3 + Robotiq 2F-85",
+  "screw (axis, point, pitch, magnitude) and grasp part inferred by BITSI from the point cloud",
+  "one successful trial per task; per-task success rates over all trials on each card"
+ ],
+ "clips": [
+  {
+   "video": "figures/tasks_viz/turn_104.mp4",
+   "card": [
+    "Turn the bottle cap",
+    "red: the task screw inferred by BITSI; right: BITSI's part and the grasp heatmap (tau under the screw)",
+    "this trial: joint_change 181.16",
+    "success over all trials of this task: 10/10"
+   ]
+  },
+  {
+   "video": "figures/tasks_viz/hinge_103.mp4",
+   "card": [
+    "Open the lid",
+    "red: the task screw inferred by BITSI; right: BITSI's part and the grasp heatmap (tau under the screw)",
+    "this trial: joint_change 65.38",
+    "success over all trials of this task: 4/10"
+   ]
+  },
+  {
+   "video": "figures/tasks_viz/slide_101.mp4",
+   "card": [
+    "Pull the drawer",
+    "red: the task screw inferred by BITSI; right: BITSI's part and the grasp heatmap (tau under the screw)",
+    "this trial: joint_change 0.12",
+    "success over all trials of this task: 8/10"
+   ]
+  },
+  {
+   "video": "figures/tasks_viz/press_101.mp4",
+   "card": [
+    "Press the button",
+    "red: the task screw inferred by BITSI; right: BITSI's part and the grasp heatmap (tau under the screw)",
+    "this trial: joint_change 0.01",
+    "success over all trials of this task: 10/10"
+   ]
+  },
+  {
+   "video": "figures/tasks_viz/squeeze_102.mp4",
+   "card": [
+    "Squeeze the tongs",
+    "red: the task screw inferred by BITSI; right: BITSI's part and the grasp heatmap (tau under the screw)",
+    "this trial: joint_change -16.09",
+    "success over all trials of this task: 4/10"
+   ]
+  },
+  {
+   "video": "figures/tasks_viz/pivot_105.mp4",
+   "card": [
+    "Tilt the box about its edge",
+    "red: the task screw inferred by BITSI; right: BITSI's part and the grasp heatmap (tau under the screw)",
+    "this trial: rot 49.71",
+    "success over all trials of this task: 10/10"
+   ]
+  },
+  {
+   "video": "figures/tasks_viz/lift_obj_000002.mp4",
+   "card": [
+    "Lift the drill",
+    "red: the task screw inferred by BITSI; right: BITSI's part and the grasp heatmap (tau under the screw)",
+    "this trial: rise 0.13",
+    "success over all trials of this task: 7/12"
+   ]
+  },
+  {
+   "video": "figures/tasks_viz/swing_obj_000003.mp4",
+   "card": [
+    "Swing the hammer",
+    "red: the task screw inferred by BITSI; right: BITSI's part and the grasp heatmap (tau under the screw)",
+    "this trial: rot 41.51",
+    "success over all trials of this task: 10/12"
+   ]
+  },
+  {
+   "video": "figures/tasks_viz/scoop_obj_000001.mp4",
+   "card": [
+    "Scoop with the ladle",
+    "red: the task screw inferred by BITSI; right: BITSI's part and the grasp heatmap (tau under the screw)",
+    "this trial: rot 36.07",
+    "success over all trials of this task: 7/12"
+   ]
+  },
+  {
+   "video": "figures/tasks_viz/stir_obj_000021.mp4",
+   "card": [
+    "Stir with the whisk",
+    "red: the task screw inferred by BITSI; right: BITSI's part and the grasp heatmap (tau under the screw)",
+    "this trial: yaw 116.79",
+    "success over all trials of this task: 4/12"
+   ]
+  },
+  {
+   "video": "figures/tasks_viz/cut_101.mp4",
+   "card": [
+    "Cut stroke with the knife",
+    "red: the task screw inferred by BITSI; right: BITSI's part and the grasp heatmap (tau under the screw)",
+    "this trial: stroke 0.09",
+    "success over all trials of this task: 10/10"
+   ]
+  },
+  {
+   "video": "figures/tasks_viz/handover_obj_000003.mp4",
+   "card": [
+    "Hand over the screwdriver",
+    "red: the task screw inferred by BITSI; right: BITSI's part and the grasp heatmap (tau under the screw)",
+    "this trial: handle_err_deg 14.75",
+    "success over all trials of this task: 3/12"
+   ]
+  }
+ ]
+}

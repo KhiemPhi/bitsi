@@ -1,0 +1,8 @@
+0 done, 128 to run
+0 / 128
+[WARNING] /root/Open3D/build/poisson/src/ext_poisson/PoissonRecon/Src/FEMTree.IsoSurface.specialized.inl (Line 1858)
+          Extract
+          bad average roots: 2
+50 / 128
+100 / 128
+finished

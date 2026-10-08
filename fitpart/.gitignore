@@ -1,0 +1,7 @@
+# large or regenerable artifacts (kept locally, not versioned)
+*.mp4
+*.npz
+*.pkl
+data_pour/
+results/**/*.txt
+__pycache__/

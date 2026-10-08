@@ -1,0 +1,117 @@
+{
+ "title": [
+  "Kinova Gen3 + Robotiq 2F-85: task screws from BITSI",
+  "one successful trial per task (chosen to show success; rates over all trials on each card)",
+  "articulated objects are procedural (exact joints); tools are HANDAL meshes"
+ ],
+ "clips": [
+  {
+   "video": "figures/tasks/turn_104.mp4",
+   "card": [
+    "turn the bottle cap (unscrew)",
+    "screw inferred by BITSI from the object's point cloud (no labels)",
+    "this trial: axis_err_deg 0.35, joint_change 181.16",
+    "success rate over all trials of this task: 10/10"
+   ]
+  },
+  {
+   "video": "figures/tasks/hinge_103.mp4",
+   "card": [
+    "open the lid (hinge)",
+    "screw inferred by BITSI from the object's point cloud (no labels)",
+    "this trial: axis_err_deg 0.39, joint_change 65.38",
+    "success rate over all trials of this task: 4/10"
+   ]
+  },
+  {
+   "video": "figures/tasks/slide_101.mp4",
+   "card": [
+    "pull the drawer (slide)",
+    "screw inferred by BITSI from the object's point cloud (no labels)",
+    "this trial: axis_err_deg 0.37, joint_change 0.12",
+    "success rate over all trials of this task: 8/10"
+   ]
+  },
+  {
+   "video": "figures/tasks/press_101.mp4",
+   "card": [
+    "press the button",
+    "screw inferred by BITSI from the object's point cloud (no labels)",
+    "this trial: axis_err_deg 8.51, joint_change 0.01",
+    "success rate over all trials of this task: 10/10"
+   ]
+  },
+  {
+   "video": "figures/tasks/squeeze_102.mp4",
+   "card": [
+    "squeeze the tongs",
+    "screw inferred by BITSI from the object's point cloud (no labels)",
+    "this trial: axis_err_deg 0.01, joint_change -16.09",
+    "success rate over all trials of this task: 4/10"
+   ]
+  },
+  {
+   "video": "figures/tasks/pivot_105.mp4",
+   "card": [
+    "tilt the box about its edge",
+    "screw inferred by BITSI from the object's point cloud (no labels)",
+    "this trial: rot 49.71",
+    "success rate over all trials of this task: 10/10"
+   ]
+  },
+  {
+   "video": "figures/tasks/lift_obj_000002.mp4",
+   "card": [
+    "lift the drill",
+    "screw inferred by BITSI from the object's point cloud (no labels)",
+    "this trial: rise 0.13",
+    "success rate over all trials of this task: 7/12"
+   ]
+  },
+  {
+   "video": "figures/tasks/swing_obj_000003.mp4",
+   "card": [
+    "swing the hammer",
+    "screw inferred by BITSI from the object's point cloud (no labels)",
+    "this trial: rot 41.51",
+    "success rate over all trials of this task: 10/12"
+   ]
+  },
+  {
+   "video": "figures/tasks/scoop_obj_000001.mp4",
+   "card": [
+    "scoop with the ladle",
+    "screw inferred by BITSI from the object's point cloud (no labels)",
+    "this trial: rot 36.07",
+    "success rate over all trials of this task: 7/12"
+   ]
+  },
+  {
+   "video": "figures/tasks/stir_obj_000021.mp4",
+   "card": [
+    "stir with the whisk",
+    "screw inferred by BITSI from the object's point cloud (no labels)",
+    "this trial: yaw 116.79",
+    "success rate over all trials of this task: 4/12"
+   ]
+  },
+  {
+   "video": "figures/tasks/cut_101.mp4",
+   "card": [
+    "cut stroke with the knife",
+    "screw inferred by BITSI from the object's point cloud (no labels)",
+    "this trial: stroke 0.09",
+    "success rate over all trials of this task: 10/10"
+   ]
+  },
+  {
+   "video": "figures/tasks/handover_obj_000003.mp4",
+   "card": [
+    "hand over the screwdriver",
+    "screw inferred by BITSI from the object's point cloud (no labels)",
+    "this trial: handle_err_deg 14.75",
+    "success rate over all trials of this task: 3/12"
+   ]
+  }
+ ]
+}
