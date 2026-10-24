@@ -7,8 +7,9 @@ RUN apt-get update && apt-get install -y --no-install-recommends python3-pip ros
 # numpy 1.24.x: <2 for ROS Humble's compiled bindings, <1.25 for Ubuntu 22.04's system SciPy, and supported by numba 0.58
 # (bitsi_slicer/slicing.py uses numba.njit). open3d 0.18 and numba 0.58 publish aarch64 wheels for Python 3.10.
 RUN python3 -m pip install --no-cache-dir "numpy==1.24.4" "numba==0.58.1" "open3d>=0.18,<0.19" scikit-learn matplotlib networkx
+# main.py imports `bitsi_slicer.bitsi_slicer` (repo-root layout), so the package is used from PYTHONPATH, not pip-installed:
+# an installed `bitsi_slicer` would shadow the outer folder and break that import.
 COPY bitsi_slicer /opt/bitsi/bitsi_slicer
-RUN python3 -m pip install --no-cache-dir --no-deps /opt/bitsi/bitsi_slicer
 COPY main.py /opt/bitsi/main.py
 COPY ros_bitsi/bitsi_core.py ros_bitsi/bitsi_node.py /opt/bitsi/
 WORKDIR /opt/bitsi
