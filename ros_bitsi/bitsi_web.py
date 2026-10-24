@@ -59,7 +59,7 @@ def render(path, request_id, frame_id, objects):
         ax3.set_title(f"{o.get('label') or 'object'} (id {o['id']}): {len(P)} segments")
         for ax, (a, b), t in zip(axs, ((0, 1), (0, 2)), ('top view (x-y), input in grey', 'side view (x-z), input in grey')):
             ax.set_aspect('equal', adjustable='datalim'); ax.set_xlabel('xyz'[a] + ' [m]'); ax.set_ylabel('xyz'[b] + ' [m]'); ax.set_title(t); ax.grid(alpha=.3)
-    fig.suptitle(f'BITSI request {request_id}  (frame {frame_id})'); fig.tight_layout(); fig.savefig(path, dpi=90); plt.close(fig)
+    fig.tight_layout(); fig.savefig(path, dpi=90); plt.close(fig)   # request id and frame are in the page heading
     return True
 
 
