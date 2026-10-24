@@ -4,8 +4,9 @@
 FROM ros-realsense:humble
 ENV DEBIAN_FRONTEND=noninteractive PYTHONUNBUFFERED=1
 RUN apt-get update && apt-get install -y --no-install-recommends python3-pip ros-humble-sensor-msgs-py libgl1 libgomp1 && rm -rf /var/lib/apt/lists/*
-# numpy<2 keeps ROS Humble's compiled Python bindings working; open3d publishes aarch64 wheels for Python 3.10
-RUN python3 -m pip install --no-cache-dir "numpy<2" "open3d>=0.18,<0.19" scikit-learn scipy matplotlib networkx
+# numpy 1.24.x: <2 for ROS Humble's compiled bindings, <1.25 for Ubuntu 22.04's system SciPy, and supported by numba 0.58
+# (bitsi_slicer/slicing.py uses numba.njit). open3d 0.18 and numba 0.58 publish aarch64 wheels for Python 3.10.
+RUN python3 -m pip install --no-cache-dir "numpy==1.24.4" "numba==0.58.1" "open3d>=0.18,<0.19" scikit-learn matplotlib networkx
 COPY bitsi_slicer /opt/bitsi/bitsi_slicer
 RUN python3 -m pip install --no-cache-dir --no-deps /opt/bitsi/bitsi_slicer
 COPY main.py /opt/bitsi/main.py
