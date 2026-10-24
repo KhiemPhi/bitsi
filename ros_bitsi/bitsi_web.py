@@ -116,7 +116,8 @@ class WebView:
                 parts.append('<table><tr><th>segment</th><th>points</th><th>centroid x, y, z [m]</th><th>OBB extent [m]</th><th>IBR</th></tr>')
                 for s in o['segments']:
                     f3 = lambda v: ', '.join(f'{x:.3f}' for x in v) if v else ''
-                    parts.append(f"<tr><td>{e(s['name'])}</td><td>{s['n_points']}</td><td>{f3(s.get('centroid'))}</td><td>{f3(s.get('obb_extent'))}</td><td>{'' if s.get('ibr_ratio') is None else f"{s['ibr_ratio']:.3f}"}</td></tr>")
+                    ibr = '' if s.get('ibr_ratio') is None else '%.3f' % s['ibr_ratio']
+                    parts.append(f"<tr><td>{e(s['name'])}</td><td>{s['n_points']}</td><td>{f3(s.get('centroid'))}</td><td>{f3(s.get('obb_extent'))}</td><td>{ibr}</td></tr>")
                 parts.append('</table>')
             parts.append('</section>')
         parts.append('</body></html>')
