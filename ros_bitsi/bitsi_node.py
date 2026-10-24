@@ -145,10 +145,11 @@ class BitsiNode(Node):
                     rec['segments'] = [{k: v for k, v in s.items() if k != 'points'} for s in r['segments']]
                     for j, s in enumerate(r['segments']): seg_pts.append(s['points']); seg_ids.append(np.full(len(s['points']), len(seg_ids), np.float32))
                     rec['seg_points'] = [s['points'] for s in r['segments']]
+                    rec['raw_points'] = pts
                     if self.save_dir: self.save(req, oid, label, r)
                 except Exception as e:
                     rec['error'] = f'{type(e).__name__}: {e}'
-                rec['seconds'] = round(time.time() - t0, 3); web_objs.append(rec); out['objects'].append({k: v for k, v in rec.items() if k != 'seg_points'})
+                rec['seconds'] = round(time.time() - t0, 3); web_objs.append(rec); out['objects'].append({k: v for k, v in rec.items() if k not in ('seg_points', 'raw_points')})
                 self.done.add((req, oid))
                 self.get_logger().info(f'request {req} object {oid} ({label}): {len(pts)} pts -> '
                                        f'{len(rec.get("segments", []))} segments in {rec["seconds"]}s' + (f' ERROR {rec["error"]}' if 'error' in rec else ''))

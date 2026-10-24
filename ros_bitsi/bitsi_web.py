@@ -16,23 +16,30 @@ CMAP = plt.get_cmap('tab10')
 
 
 def render(path, request_id, frame_id, objects):
-    """objects: [{'label', 'id', 'segments': [{'name', 'centroid', ...}], 'seg_points': [ (n,3) arrays ]}]"""
+    """objects: [{'label', 'id', 'segments': [{'name', 'centroid', ...}], 'seg_points': [(n,3)], 'raw_points': (N,3) input cloud}]"""
     objs = [o for o in objects if o.get('seg_points')]
     if not objs: return False
-    fig = plt.figure(figsize=(15, 4.6 * len(objs)))
+    fig = plt.figure(figsize=(20, 4.8 * len(objs)))
     for r, o in enumerate(objs):
-        P = o['seg_points']; allp = np.concatenate(P); lo, hi = allp.min(0), allp.max(0); c = (lo + hi) / 2; h = (hi - lo).max() / 2 * 1.1 + 1e-3
-        ax3 = fig.add_subplot(len(objs), 3, 3 * r + 1, projection='3d'); axs = [fig.add_subplot(len(objs), 3, 3 * r + k) for k in (2, 3)]
+        P = o['seg_points']; raw = o.get('raw_points'); raw = None if raw is None or len(raw) == 0 else np.asarray(raw)
+        allp = np.concatenate(P + ([raw] if raw is not None else [])); lo, hi = allp.min(0), allp.max(0); c = (lo + hi) / 2; h = (hi - lo).max() / 2 * 1.1 + 1e-3
+        axr = fig.add_subplot(len(objs), 4, 4 * r + 1, projection='3d'); ax3 = fig.add_subplot(len(objs), 4, 4 * r + 2, projection='3d')
+        axs = [fig.add_subplot(len(objs), 4, 4 * r + k) for k in (3, 4)]
+        if raw is not None:   # full input cloud as received from the pipeline, before voxel/outlier filtering
+            q = raw[::max(1, len(raw) // 6000)]
+            axr.scatter(q[:, 0], q[:, 1], q[:, 2], s=1.5, c=q[:, 2], cmap='viridis')
+            for ax, (a, b) in zip(axs, ((0, 1), (0, 2))): ax.scatter(q[:, a], q[:, b], s=4, color='0.85', zorder=0)
+        axr.set_title(f"input cloud: {0 if raw is None else len(raw)} points"); axr.set_xlabel('x'); axr.set_ylabel('y'); axr.set_zlabel('z')
+        for ax in (axr, ax3): ax.set_xlim(c[0] - h, c[0] + h); ax.set_ylim(c[1] - h, c[1] + h); ax.set_zlim(c[2] - h, c[2] + h)
         for j, (p, s) in enumerate(zip(P, o['segments'])):
             col = CMAP(j % 10); step = max(1, len(p) // 3000); q = p[::step]
             ax3.scatter(q[:, 0], q[:, 1], q[:, 2], s=1.5, color=col, label=f"{s['name']} ({s['n_points']})")
             for ax, (a, b) in zip(axs, ((0, 1), (0, 2))):
                 ax.scatter(q[:, a], q[:, b], s=1.5, color=col); m = s['centroid']
                 ax.scatter([m[a]], [m[b]], s=60, color=col, edgecolor='k', marker='X', zorder=3); ax.annotate(s['name'].replace('segment_', 's'), (m[a], m[b]), fontsize=8)
-        ax3.set_xlim(c[0] - h, c[0] + h); ax3.set_ylim(c[1] - h, c[1] + h); ax3.set_zlim(c[2] - h, c[2] + h)
         ax3.set_xlabel('x'); ax3.set_ylabel('y'); ax3.set_zlabel('z'); ax3.legend(fontsize=7, markerscale=5, loc='upper left')
         ax3.set_title(f"{o.get('label') or 'object'} (id {o['id']}): {len(P)} segments")
-        for ax, (a, b), t in zip(axs, ((0, 1), (0, 2)), ('top view (x-y)', 'side view (x-z)')):
+        for ax, (a, b), t in zip(axs, ((0, 1), (0, 2)), ('top view (x-y), input in grey', 'side view (x-z), input in grey')):
             ax.set_aspect('equal', adjustable='datalim'); ax.set_xlabel('xyz'[a] + ' [m]'); ax.set_ylabel('xyz'[b] + ' [m]'); ax.set_title(t); ax.grid(alpha=.3)
     fig.suptitle(f'BITSI request {request_id}  (frame {frame_id})'); fig.tight_layout(); fig.savefig(path, dpi=90); plt.close(fig)
     return True
