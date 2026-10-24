@@ -18,6 +18,13 @@ python3 scripts/system.py detect "cup"   # in the pipeline repo; the node proces
 ```
 `run.sh` uses `--network host --ipc host -e ROS_DOMAIN_ID=${ROS_DOMAIN_ID:-0}` as the pipeline docs require.
 
+## Web view
+While the node runs, open `http://<orin-ip>:8090/` in a browser. After every processed request it renders a matplotlib
+figure per object (3D view, top view x-y, side view x-z, points coloured by segment, centroids marked) and a table of
+segments (points, centroid, oriented-box extent, IBR). The page refreshes every 5 s, newest request first, and keeps the
+last 20 requests. Change the port with `BITSI_ARGS="-p web_port:=8091"`; `-p web_port:=0` disables it. The server binds to
+all interfaces (host networking), so expose the port only on a trusted network, like the pipeline's own viewer on 8080.
+
 ## Other point-cloud topics
 Any `sensor_msgs/PointCloud2` topic (one object per message) works too:
 ```bash
@@ -43,7 +50,7 @@ re-run BITSI. If a new request arrives while one is running, it is picked up fro
 
 ## Parameters (`--ros-args -p name:=value`)
 `gripper_width` .13, `gripper_height` .07, `epsilon` 5e-3, `strength_threshold` .01, `ibr_tolerance` .07 (main.py values),
-`voxel` .004 m (voxel downsampling + statistical outlier removal before BITSI; 0 disables downsampling), `save_dir` (PLY per
+`web_port` 8090 (0 disables), `web_dir` /tmp/bitsi_web, `voxel` .004 m (voxel downsampling + statistical outlier removal before BITSI; 0 disables downsampling), `save_dir` (PLY per
 segment + bitsi.json per object), `clouds_topic`, `result_topic`.
 
 ## Notes

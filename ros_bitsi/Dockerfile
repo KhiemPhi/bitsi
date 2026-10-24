@@ -11,7 +11,7 @@ RUN python3 -m pip install --no-cache-dir "numpy==1.24.4" "numba==0.58.1" "open3
 # an installed `bitsi_slicer` would shadow the outer folder and break that import.
 COPY bitsi_slicer /opt/bitsi/bitsi_slicer
 COPY main.py /opt/bitsi/main.py
-COPY ros_bitsi/bitsi_core.py ros_bitsi/bitsi_node.py /opt/bitsi/
+COPY ros_bitsi/bitsi_core.py ros_bitsi/bitsi_web.py ros_bitsi/bitsi_node.py /opt/bitsi/
 WORKDIR /opt/bitsi
 ENV PYTHONPATH=/opt/bitsi
 CMD ["bash", "-lc", "source /opt/ros/humble/setup.bash && source /opt/perception_interfaces/setup.bash && python3 /opt/bitsi/bitsi_node.py --ros-args -p save_dir:=${BITSI_SAVE_DIR:-/tmp/bitsi_outputs} ${BITSI_ARGS:-}"]

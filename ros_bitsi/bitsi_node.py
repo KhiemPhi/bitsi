@@ -22,6 +22,7 @@ from std_msgs.msg import String, Header
 from seg_interfaces.msg import ObjectClouds, SegObjects
 
 from bitsi_core import run_bitsi
+from bitsi_web import WebView
 
 ID_KEYS = ('id', 'object_id', 'obj_id', 'index'); LABEL_KEYS = ('label', 'name', 'class_name', 'category'); REQ_KEYS = ('request_id', 'req_id')
 
@@ -64,6 +65,7 @@ class BitsiNode(Node):
         self.p = dict(gripper_width=P('gripper_width', .13), gripper_height=P('gripper_height', .07), epsilon=P('epsilon', 5e-3),
                       strength_threshold=P('strength_threshold', .01), ibr_tolerance=P('ibr_tolerance', .07), voxel=P('voxel', .004))
         self.save_dir = P('save_dir', ''); clouds_topic = P('clouds_topic', '/perception/clouds'); result_topic = P('result_topic', '/perception/result')
+        web_port = int(P('web_port', 8090)); web_dir = P('web_dir', '/tmp/bitsi_web')
         input_type = P('input_type', 'object_clouds')   # 'object_clouds' (seg_interfaces/ObjectClouds) or 'pointcloud2' (any sensor_msgs/PointCloud2 topic)
         qos = QoSProfile(depth=10, reliability=ReliabilityPolicy.RELIABLE, durability=DurabilityPolicy.TRANSIENT_LOCAL, history=HistoryPolicy.KEEP_LAST)
         self.labels = {}; self.done = set(); self.lock = threading.Lock(); self.busy = False; self.logged = set()
@@ -75,6 +77,10 @@ class BitsiNode(Node):
             self.create_subscription(ObjectClouds, clouds_topic, self.on_clouds, qos)
         self.pub_json = self.create_publisher(String, '/bitsi/result', qos)
         self.pub_cloud = self.create_publisher(PointCloud2, '/bitsi/segments', qos)
+        self.web = None
+        if web_port:
+            try: self.web = WebView(web_dir, web_port); self.get_logger().info(f'web view: http://<this-machine-ip>:{web_port}/  (serving {web_dir})')
+            except OSError as e: self.get_logger().error(f'web view disabled, port {web_port}: {e}')
         self.get_logger().info(f'input_type={input_type}; listening on {clouds_topic}' + ('' if input_type == 'pointcloud2' else f' and {result_topic}') + f'; params {self.p}; save_dir={self.save_dir or "(off)"}')
 
     def log_layout(self, tag, msg):
@@ -109,7 +115,7 @@ class BitsiNode(Node):
 
     def process(self, req, items):
         try:
-            out = dict(request_id=req, objects=[]); seg_pts = []; seg_ids = []; hdr = None
+            out = dict(request_id=req, objects=[]); seg_pts = []; seg_ids = []; hdr = None; web_objs = []
             for oid, lab, cloud in items:
                 hdr = cloud.header; label = lab or self.labels.get((req, oid), '')
                 pts = pc2.read_points_numpy(cloud, field_names=('x', 'y', 'z'), skip_nans=True).astype(np.float64)
@@ -117,17 +123,22 @@ class BitsiNode(Node):
                 try:
                     r = run_bitsi(pts, **self.p); rec.update({k: v for k, v in r.items() if k != 'segments'})
                     rec['segments'] = [{k: v for k, v in s.items() if k != 'points'} for s in r['segments']]
-                    for j, s in enumerate(r['segments']): seg_pts.append(s['points']); seg_ids.append(np.full(len(s['points']), j, np.float32))
+                    for j, s in enumerate(r['segments']): seg_pts.append(s['points']); seg_ids.append(np.full(len(s['points']), len(seg_ids), np.float32))
+                    rec['seg_points'] = [s['points'] for s in r['segments']]
                     if self.save_dir: self.save(req, oid, label, r)
                 except Exception as e:
                     rec['error'] = f'{type(e).__name__}: {e}'
-                rec['seconds'] = round(time.time() - t0, 3); out['objects'].append(rec); self.done.add((req, oid))
+                rec['seconds'] = round(time.time() - t0, 3); web_objs.append(rec); out['objects'].append({k: v for k, v in rec.items() if k != 'seg_points'})
+                self.done.add((req, oid))
                 self.get_logger().info(f'request {req} object {oid} ({label}): {len(pts)} pts -> '
                                        f'{len(rec.get("segments", []))} segments in {rec["seconds"]}s' + (f' ERROR {rec["error"]}' if 'error' in rec else ''))
             if hdr is not None:
                 out.update(frame_id=hdr.frame_id, stamp=hdr.stamp.sec + 1e-9 * hdr.stamp.nanosec)
                 if seg_pts: self.pub_cloud.publish(self.to_cloud(hdr, np.concatenate(seg_pts), np.concatenate(seg_ids)))
             self.pub_json.publish(String(data=json.dumps(out)))
+            if self.web is not None:
+                try: self.web.add(req, out.get('frame_id', ''), web_objs)
+                except Exception: self.get_logger().error('web render failed:\n' + traceback.format_exc())
         except Exception:
             self.get_logger().error(traceback.format_exc())
         finally:
