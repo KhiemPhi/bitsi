@@ -1,0 +1,47 @@
+# BITSI Chebyshev consumer for the robot perception pipeline
+
+A separate container on the Orin that reads the pipeline's robot-frame object clouds and runs BITSI Chebyshev segmentation
+(`main.py` pipeline: build_cloud_object → auto_thickness → bitsi_metric → Chebyshev fit/inflections → segment tree → fuse →
+rename). Motion planning is not done here; it consumes `/bitsi/result` and `/bitsi/segments`.
+
+It is a NEW image built `FROM ros-realsense:humble`, which already holds ROS 2 Humble and the generated `seg_interfaces`
+(`/opt/perception_interfaces`). No pipeline container or image is modified.
+
+## On the Orin
+```bash
+# copy ~/bitsi (main.py, bitsi_slicer/, ros_bitsi/) to the Orin, then from its root:
+ros_bitsi/run.sh build          # docker build -f ros_bitsi/Dockerfile -t bitsi-ros:humble .
+python3 scripts/system.py start # in the pipeline repo, if not running
+ros_bitsi/run.sh test           # imports + checks that /perception/* topics are visible (same ROS_DOMAIN_ID)
+ros_bitsi/run.sh run            # start the node; outputs saved under ~/bitsi_outputs (BITSI_OUT to change)
+python3 scripts/system.py detect "cup"   # in the pipeline repo; the node processes the clouds of this request
+```
+`run.sh` uses `--network host --ipc host -e ROS_DOMAIN_ID=${ROS_DOMAIN_ID:-0}` as the pipeline docs require.
+
+## Topics
+| Direction | Topic | Type | QoS |
+|---|---|---|---|
+| in | `/perception/clouds` | `seg_interfaces/msg/ObjectClouds` | reliable, transient-local |
+| in | `/perception/result` | `seg_interfaces/msg/SegObjects` (labels only) | reliable, transient-local |
+| out | `/bitsi/result` | `std_msgs/String`, JSON | reliable, transient-local |
+| out | `/bitsi/segments` | `sensor_msgs/PointCloud2`, fields x y z segment (float32), robot frame | reliable, transient-local |
+
+`/bitsi/result` JSON: `{request_id, frame_id, stamp, objects: [{id, label, n_points, n_filtered, thickness, slice_axis,
+seconds, segments: [{name, n_points, centroid, ibr_ratio, obb_center, obb_extent, obb_R}]}]}`; an object that cannot be
+segmented carries `error` instead of `segments`. All coordinates are in the cloud's header frame (the fixed robot frame).
+
+Each `(request_id, object id)` is processed once, so the pipeline's repeated publications for late subscribers do not
+re-run BITSI. If a new request arrives while one is running, it is picked up from the pipeline's next repeat.
+
+## Parameters (`--ros-args -p name:=value`)
+`gripper_width` .13, `gripper_height` .07, `epsilon` 5e-3, `strength_threshold` .01, `ibr_tolerance` .07 (main.py values),
+`voxel` .004 m (voxel downsampling + statistical outlier removal before BITSI; 0 disables downsampling), `save_dir` (PLY per
+segment + bitsi.json per object), `clouds_topic`, `result_topic`.
+
+## Notes
+- Field names of `ObjectClouds`/`SegObjects` are found by introspection (any `PointCloud2`, with `id`/`object_id` and
+  `label`/`name` beside it). The node logs both message layouts on first receipt; if ids or labels show up wrong, check
+  that log against `seg_interfaces/msg/*.msg` and adjust `ID_KEYS`/`LABEL_KEYS` in `bitsi_node.py`.
+- The depth clouds are partial (visible surface), whereas BITSI was developed on full models; expect coarser segments.
+- Tested here: `bitsi_core.run_bitsi` on a synthetic partial robot-frame cloud (2.1 s, 5 segments, robot-frame
+  centroids). Not tested here: the ROS node itself, the image build on aarch64, and the real seg_interfaces messages.
