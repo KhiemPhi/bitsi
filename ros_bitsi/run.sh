@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Build and run the BITSI consumer on the Orin (next to the running perception pipeline). Usage: ros_bitsi/run.sh [build|run|shell|test|target "label"]
 set -e; cd "$(dirname "$0")/.."; IMG=bitsi-ros:humble; NAME=bitsi-chebyshev; OUT=${BITSI_OUT:-$HOME/bitsi_outputs}
-RUN=(docker run --rm --name $NAME --network host --ipc host -e ROS_DOMAIN_ID=${ROS_DOMAIN_ID:-0} -e BITSI_SAVE_DIR=/outputs -e BITSI_ARGS="${BITSI_ARGS:-}" -e BITSI_TARGET="${BITSI_TARGET:-}" -e BITSI_VERSION="${BITSI_VERSION:-v0}" -v "$OUT":/outputs)
+RUN=(docker run --rm --name $NAME --network host --ipc host -e ROS_DOMAIN_ID=${ROS_DOMAIN_ID:-0} -e BITSI_SAVE_DIR=/outputs -e BITSI_ARGS="${BITSI_ARGS:-}" -e BITSI_TARGET="${BITSI_TARGET:-}" -e BITSI_VERSION="${BITSI_VERSION:-v0}" -e SALSA_COMMAND="${SALSA_COMMAND:-}" -v "$OUT":/outputs)
 case "${1:-run}" in
   build) docker build -f ros_bitsi/Dockerfile -t $IMG . ;;
   run)   mkdir -p "$OUT"; "${RUN[@]}" -it $IMG ;;
@@ -11,5 +11,7 @@ case "${1:-run}" in
          docker exec $NAME bash -lc "source /opt/ros/humble/setup.bash; ros2 topic pub --once /bitsi/target std_msgs/msg/String \"{data: '${T//\'/}'}\"" >/dev/null && echo "target -> ${T:-all objects}" ;;
   version) shift   # switch the algorithm while the node runs: run.sh version v4   (v0 v3 v4 v5 v6)
          docker exec $NAME bash -lc "source /opt/ros/humble/setup.bash; ros2 topic pub --once /bitsi/version std_msgs/msg/String \"{data: '$1'}\"" >/dev/null && echo "BITSI version -> $1" ;;
-  *) echo "usage: $0 [build|run|shell|test|target \"label\"|version v4]"; exit 1 ;;
+  salsa) shift; C="$*"   # SALSA task while the node runs: run.sh salsa "lift 10 cm"   (empty = off)
+         docker exec $NAME bash -lc "source /opt/ros/humble/setup.bash; ros2 topic pub --once /salsa/command std_msgs/msg/String \"{data: '${C//\'/}'}\"" >/dev/null && echo "SALSA -> ${C:-off}" ;;
+  *) echo "usage: $0 [build|run|shell|test|target \"label\"|version v4|salsa \"lift 10 cm\"]"; exit 1 ;;
 esac

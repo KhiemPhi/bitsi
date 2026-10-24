@@ -18,6 +18,37 @@ python3 scripts/system.py detect "cup"   # in the pipeline repo; the node proces
 ```
 `run.sh` uses `--network host --ipc host -e ROS_DOMAIN_ID=${ROS_DOMAIN_ID:-0}` as the pipeline docs require.
 
+## SALSA: parts -> screw label -> end-effector pose sequence
+Give a task command and every processed object also gets a SALSA plan (`salsa_core.py`, using `fitpart/tasks/screws.py`):
+1. **Segment:** BITSI v4 with gravity `up` (screws.analyze): coaxial segments along the root spine plus off-axis children.
+2. **Screw label:** the task rule picks the part to grasp and the screw it must follow (axis, point, pitch, magnitude;
+   Lynch & Park). Tasks: turn, hinge, slide, press, squeeze, pivot, lift, swing, scoop, stir, cut, handover (+ fasten if
+   your local screws.py is committed). The command sets amount and sense: `lift 10 cm`, `turn 90 deg`, `turn 90 deg reverse`,
+   `hinge` (default amounts as fitpart/lang/model.py). Aliases: open/close -> hinge, rotate/twist -> turn, pick -> lift, pull -> slide, push -> press.
+3. **Pose sequence:** antipodal grasps on that part (fitpart/grasping.sample_grasps); per candidate:
+   `pre_grasp` (10 cm back along the approach, gripper open) -> `grasp` (close) -> `lift_k` (if the rule lifts first) ->
+   `screw_0..11` (the screw motion, gripper holding) -> `release` -> `retreat`. press: `pre_press` -> `touch` -> `press_k` -> `retreat`, fingers closed.
+
+```bash
+sudo SALSA_COMMAND="lift 10 cm" BITSI_TARGET="power drill" BITSI_OUT=$HOME/bitsi_outputs ros_bitsi/run.sh run
+sudo ros_bitsi/run.sh salsa "turn 90 deg"     # change while running (re-plans the last request); "" = off
+```
+or the "SALSA command" box on the web page, or `std_msgs/String` on `/salsa/command`.
+
+| Output | Type | Content |
+|---|---|---|
+| `/salsa/plan` | `std_msgs/String` JSON | per object: command, parts, screw (axis, point, pitch/translation, theta, lift), up to `salsa_candidates` (5) candidates, each `{rank, contacts, width, score, poses: [{name, position, quaternion_xyzw, gripper}]}` |
+| `/salsa/poses` | `geometry_msgs/PoseArray` | the best candidate's pose sequence for the first planned object (RViz / planner) |
+
+**Pose convention:** robot frame of the cloud (`base_link`); position = pinch point midway between the two finger contacts;
+rotation columns = hand x, y = closing direction, z = approach towards the object (fitpart `grasp_frame`). Add your
+gripper's pinch-point-to-TCP offset along z. **Not done here:** IK, reachability, collisions and the SOCP task-wrench
+ranking used in simulation (no robot model or object mass on this side). Candidates are ordered by a heuristic (top-down
+approach first, then grasp near the part centre); the motion planner should take the first candidate it can execute.
+
+The web page shows, per object, a SALSA figure (parts, grasp part in red, screw axis, the best candidate's path with
+approach arrows) and the pose table.
+
 ## Choosing the BITSI version
 | version | algorithm |
 |---|---|

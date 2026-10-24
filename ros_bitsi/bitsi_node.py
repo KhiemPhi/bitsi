@@ -19,10 +19,12 @@ from rclpy.qos import QoSProfile, ReliabilityPolicy, DurabilityPolicy, HistoryPo
 from sensor_msgs.msg import Image, PointCloud2, PointField, RegionOfInterest
 from sensor_msgs_py import point_cloud2 as pc2
 from std_msgs.msg import String, Header
+from geometry_msgs.msg import Pose, PoseArray
 from seg_interfaces.msg import ObjectClouds, SegObjects
 
 from bitsi_core import run_bitsi
 from bitsi_web import WebView
+from salsa_core import parse_command, salsa_plan
 
 ID_KEYS = ('id', 'object_id', 'obj_id', 'index'); LABEL_KEYS = ('label', 'name', 'class_name', 'category'); REQ_KEYS = ('request_id', 'req_id')
 
@@ -80,6 +82,13 @@ def box_of(e):
     return box, mask
 
 
+def strip_arrays(d):
+    """SALSA plan without point arrays (JSON-safe)."""
+    out = {k: v for k, v in d.items() if k != 'grasp_part_points'}
+    out['parts'] = [{k: v for k, v in p.items() if k != 'points'} for p in d.get('parts', [])]
+    return out
+
+
 def parse_target(text):
     """'cup' / 'cup, red bottle' / 'cup;phone' -> ['cup', 'red bottle', 'phone'] (lower case); empty or 'all' -> [] (every object)."""
     terms = [t.strip().lower() for t in str(text or '').replace(';', ',').split(',') if t.strip()]
@@ -115,6 +124,12 @@ class BitsiNode(Node):
             self.create_subscription(ObjectClouds, clouds_topic, self.on_clouds, qos)
         self.create_subscription(String, '/bitsi/target', lambda m: self.set_target(m.data), 10)
         self.create_subscription(String, '/bitsi/version', lambda m: self.set_version(m.data), 10)
+        # SALSA: '' = segmentation only; e.g. 'lift 10 cm', 'turn 90 deg', 'hinge' = task screw + end-effector pose sequence
+        self.salsa = P('salsa_command', os.environ.get('SALSA_COMMAND', '')); self.salsa_k = int(P('salsa_candidates', 5))
+        if self.salsa: parse_command(self.salsa)   # fail fast on an unknown task word
+        self.create_subscription(String, '/salsa/command', lambda m: self.set_salsa(m.data), 10)
+        self.pub_salsa = self.create_publisher(String, '/salsa/plan', qos)
+        self.pub_poses = self.create_publisher(PoseArray, '/salsa/poses', qos)
         overlay_topic = P('overlay_topic', '/perception/overlay')   # annotated camera image of the capture, shown on the web page
         if overlay_topic:
             self.create_subscription(Image, overlay_topic, self.on_overlay, QoSProfile(depth=2, reliability=ReliabilityPolicy.BEST_EFFORT))
@@ -122,7 +137,7 @@ class BitsiNode(Node):
         self.pub_cloud = self.create_publisher(PointCloud2, '/bitsi/segments', qos)
         self.web = None
         if web_port:
-            try: self.web = WebView(web_dir, web_port, on_target=self.set_target, target=', '.join(self.target), on_version=self.set_version, version=self.p['version']); self.get_logger().info(f'web view: http://<this-machine-ip>:{web_port}/  (serving {web_dir})')
+            try: self.web = WebView(web_dir, web_port, on_target=self.set_target, target=', '.join(self.target), on_version=self.set_version, version=self.p['version'], on_salsa=self.set_salsa, salsa=self.salsa); self.get_logger().info(f'web view: http://<this-machine-ip>:{web_port}/  (serving {web_dir})')
             except OSError as e: self.get_logger().error(f'web view disabled, port {web_port}: {e}')
         self.get_logger().info(f'input_type={input_type}; listening on {clouds_topic}' + ('' if input_type == 'pointcloud2' else f' and {result_topic}') + f'; target={", ".join(self.target) or "(all objects)"}; params {self.p}; save_dir={self.save_dir or "(off)"}')
 
@@ -155,6 +170,13 @@ class BitsiNode(Node):
         if not self.overlays: return None
         return min(self.overlays, key=lambda o: abs(o[0] - stamp))[1]
 
+    def set_salsa(self, text):
+        try: spec = parse_command(text)
+        except ValueError as e: self.get_logger().error(str(e)); return
+        self.salsa = str(text or '').strip(); self.get_logger().info(f'SALSA command: {self.salsa or "(off)"} -> {spec}')
+        if self.web is not None: self.web.set_salsa(self.salsa)
+        if self.last_clouds is not None: self.on_clouds(self.last_clouds)   # plan on the retained request
+
     def set_version(self, text):
         from bitsi_core import VERSIONS
         v = str(text).strip().lower(); v = v if v.startswith('v') else 'v' + v
@@ -176,7 +198,7 @@ class BitsiNode(Node):
 
     def on_clouds(self, msg):
         self.log_layout('ObjectClouds', msg); req = str(first_attr(msg, REQ_KEYS)); self.last_clouds = msg
-        items = [(str(oid), lab, c) for oid, lab, c in find_clouds(msg) if (req, str(oid), self.p['version']) not in self.done and self.wanted(req, str(oid), lab)]
+        items = [(str(oid), lab, c) for oid, lab, c in find_clouds(msg) if (req, str(oid), self.p['version'], self.salsa) not in self.done and self.wanted(req, str(oid), lab)]
         if not items: return
         with self.lock:
             if self.busy: self.get_logger().info(f'busy; request {req} will be picked up from the next repeat'); return
@@ -192,7 +214,7 @@ class BitsiNode(Node):
 
     def process(self, req, items):
         try:
-            out = dict(request_id=req, objects=[]); seg_pts = []; seg_ids = []; hdr = None; web_objs = []
+            out = dict(request_id=req, objects=[]); seg_pts = []; seg_ids = []; hdr = None; web_objs = []; salsa_out = []
             for oid, lab, cloud in items:
                 hdr = cloud.header; label = lab or self.labels.get((req, oid), '')
                 pts = pc2.read_points_numpy(cloud, field_names=('x', 'y', 'z'), skip_nans=True).astype(np.float64)
@@ -208,15 +230,36 @@ class BitsiNode(Node):
                     if self.save_dir: self.save(req, oid, label, r)
                 except Exception as e:
                     rec['error'] = f'{type(e).__name__}: {e}'
-                rec['seconds'] = round(time.time() - t0, 3); web_objs.append(rec); out['objects'].append({k: v for k, v in rec.items() if k not in ('seg_points', 'raw_points', 'image', 'mask2d')}
+                if self.salsa:
+                    try:
+                        sp = salsa_plan(pts, self.salsa, voxel=self.p['voxel'] or 0.004, n_candidates=self.salsa_k)
+                        rec['salsa'] = sp; salsa_out.append(dict(id=oid, label=str(label), **strip_arrays(sp)))
+                    except Exception as e:
+                        rec['salsa'] = dict(command=self.salsa, error=f'{type(e).__name__}: {e}', parts=[], candidates=[])
+                        salsa_out.append(dict(id=oid, label=str(label), command=self.salsa, error=rec['salsa']['error']))
+                rec['seconds'] = round(time.time() - t0, 3); web_objs.append(rec); out['objects'].append({k: v for k, v in rec.items() if k not in ('seg_points', 'raw_points', 'image', 'mask2d', 'salsa')}
                                        | ({'bbox2d': [float(t) for t in rec['bbox2d']]} if rec.get('bbox2d') is not None else {}))
-                self.done.add((req, oid, self.p['version']))
+                self.done.add((req, oid, self.p['version'], self.salsa))
                 self.get_logger().info(f'request {req} object {oid} ({label}): {len(pts)} pts -> '
                                        f'{len(rec.get("segments", []))} segments in {rec["seconds"]}s' + (f' ERROR {rec["error"]}' if 'error' in rec else ''))
             if hdr is not None:
                 out.update(frame_id=hdr.frame_id, stamp=hdr.stamp.sec + 1e-9 * hdr.stamp.nanosec)
                 if seg_pts: self.pub_cloud.publish(self.to_cloud(hdr, np.concatenate(seg_pts), np.concatenate(seg_ids)))
             self.pub_json.publish(String(data=json.dumps(out)))
+            if salsa_out and hdr is not None:
+                plan = dict(request_id=req, frame_id=hdr.frame_id, stamp=out['stamp'], command=self.salsa,
+                            pose_convention='pinch point between the finger contacts; rotation columns x, y=closing, z=approach',
+                            objects=salsa_out)
+                self.pub_salsa.publish(String(data=json.dumps(plan)))
+                first = next((o for o in salsa_out if o.get('candidates')), None)
+                if first is not None:   # PoseArray of the best candidate of the first planned object, for RViz / the planner
+                    pa = PoseArray(header=Header(frame_id=hdr.frame_id, stamp=hdr.stamp))
+                    for q in first['candidates'][0]['poses']:
+                        ps = Pose(); ps.position.x, ps.position.y, ps.position.z = q['position']
+                        ps.orientation.x, ps.orientation.y, ps.orientation.z, ps.orientation.w = q['quaternion_xyzw']; pa.poses.append(ps)
+                    self.pub_poses.publish(pa)
+                    self.get_logger().info(f"SALSA '{self.salsa}' object {first['id']} ({first['label']}): {len(first['candidates'])} candidate(s), "
+                                           f"{len(pa.poses)} poses each -> /salsa/plan, /salsa/poses")
             if self.web is not None:
                 try: self.web.add(req, out.get('frame_id', ''), web_objs)
                 except Exception: self.get_logger().error('web render failed:\n' + traceback.format_exc())

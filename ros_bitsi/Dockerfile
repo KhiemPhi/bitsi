@@ -14,7 +14,8 @@ COPY main.py /opt/bitsi/main.py
 # fitpart BITSI v3-v6 (only the Python sources; the folder also holds figures, data and results)
 COPY fitpart/*.py /opt/bitsi/fitpart/
 COPY fitpart/bitsi2 /opt/bitsi/fitpart/bitsi2
-COPY ros_bitsi/bitsi_core.py ros_bitsi/bitsi_web.py ros_bitsi/bitsi_node.py /opt/bitsi/
+COPY fitpart/tasks/*.py /opt/bitsi/fitpart/tasks/
+COPY ros_bitsi/bitsi_core.py ros_bitsi/salsa_core.py ros_bitsi/bitsi_web.py ros_bitsi/bitsi_node.py /opt/bitsi/
 WORKDIR /opt/bitsi
 ENV PYTHONPATH=/opt/bitsi
 CMD ["bash", "-lc", "source /opt/ros/humble/setup.bash && source /opt/perception_interfaces/setup.bash && python3 /opt/bitsi/bitsi_node.py --ros-args -p save_dir:=${BITSI_SAVE_DIR:-/tmp/bitsi_outputs} ${BITSI_ARGS:-}"]

@@ -30,6 +30,47 @@ def image_panel(ax, o, margin=.6):
     else: ax.set_title('2D detection: no box in message')
 
 
+def render_salsa(path, o):
+    """SALSA plan: BITSI v4 parts (grasp part red), screw axis (black), best candidate's pose path with approach (z) arrows."""
+    sp = o['salsa']; parts = sp['parts']; G = sp.get('grasp_part_points'); cands = sp.get('candidates') or []
+    allp = np.concatenate([p['points'] for p in parts]); lo, hi = allp.min(0), allp.max(0)
+    poses = cands[0]['poses'] if cands else []
+    if poses: P = np.array([q['position'] for q in poses]); lo, hi = np.minimum(lo, P.min(0)), np.maximum(hi, P.max(0))
+    c = (lo + hi) / 2; h = (hi - lo).max() / 2 * 1.1 + 1e-3
+    fig = plt.figure(figsize=(15, 4.8)); ax3 = fig.add_subplot(1, 3, 1, projection='3d'); axs = [fig.add_subplot(1, 3, k) for k in (2, 3)]
+    def R_of(q):
+        x, y, z, w = q
+        return np.array([[1 - 2 * (y * y + z * z), 2 * (x * y - z * w), 2 * (x * z + y * w)], [2 * (x * y + z * w), 1 - 2 * (x * x + z * z), 2 * (y * z - x * w)],
+                         [2 * (x * z - y * w), 2 * (y * z + x * w), 1 - 2 * (x * x + y * y)]])
+    for j, p in enumerate(parts):
+        q = p['points'][::max(1, len(p['points']) // 3000)]; col = CMAP(j % 10)
+        ax3.scatter(q[:, 0], q[:, 1], q[:, 2], s=1, color=col, alpha=.5, label=f"{p['name']} {p['kind']} ({p['n_points']})")
+        for ax, (a, b) in zip(axs, ((0, 1), (0, 2))): ax.scatter(q[:, a], q[:, b], s=1, color=col, alpha=.4)
+    if G is not None and len(G):
+        ax3.scatter(G[:, 0], G[:, 1], G[:, 2], s=4, color='red', label='grasp part')
+        for ax, (a, b) in zip(axs, ((0, 1), (0, 2))): ax.scatter(G[:, a], G[:, b], s=4, color='red')
+    sc = sp.get('screw')
+    if sc:
+        ax_, pt = np.array(sc['axis']), np.array(sc['point']); L = np.array([pt - ax_ * h, pt + ax_ * h])
+        ax3.plot(L[:, 0], L[:, 1], L[:, 2], 'k-', lw=2, label='screw axis')
+        for ax, (a, b) in zip(axs, ((0, 1), (0, 2))): ax.plot(L[:, a], L[:, b], 'k-', lw=1.5)
+    if poses:
+        ax3.plot(P[:, 0], P[:, 1], P[:, 2], '-', color='tab:purple', lw=1.5, label='EE path (candidate 0)')
+        for q, pp in zip(poses, P):
+            zz = R_of(q['quaternion_xyzw'])[:, 2] * h * .25; m = 'o' if q['gripper'] in ('open', 'closed') else 's'
+            ax3.quiver(pp[0], pp[1], pp[2], zz[0], zz[1], zz[2], color='tab:purple', lw=.8)
+            for ax, (a, b) in zip(axs, ((0, 1), (0, 2))):
+                ax.plot([pp[a]], [pp[b]], m, color='tab:purple', ms=4); ax.arrow(pp[a], pp[b], zz[a] * .6, zz[b] * .6, color='tab:purple', width=h * .003)
+        for q, pp in zip(poses, P):
+            if q['name'] in ('pre_grasp', 'grasp', 'pre_press', 'touch', 'release'):
+                for ax, (a, b) in zip(axs, ((0, 1), (0, 2))): ax.annotate(q['name'], (pp[a], pp[b]), fontsize=7)
+    ax3.set_xlim(c[0] - h, c[0] + h); ax3.set_ylim(c[1] - h, c[1] + h); ax3.set_zlim(c[2] - h, c[2] + h); ax3.legend(fontsize=6, markerscale=4, loc='upper left')
+    ax3.set_title(f"SALSA '{sp.get('command')}': {sc['task'] if sc else 'no screw'}" + (f", {len(cands)} candidate(s)" if cands else ''))
+    for ax, (a, b), t in zip(axs, ((0, 1), (0, 2)), ('top view (x-y)', 'side view (x-z)')):
+        ax.set_aspect('equal', adjustable='datalim'); ax.set_xlabel('xyz'[a] + ' [m]'); ax.set_ylabel('xyz'[b] + ' [m]'); ax.set_title(t); ax.grid(alpha=.3)
+    fig.tight_layout(); fig.savefig(path, dpi=90); plt.close(fig)
+
+
 def render(path, request_id, frame_id, objects):
     """objects: [{'label', 'id', 'segments': [{'name', 'centroid', ...}], 'seg_points': [(n,3)], 'raw_points': (N,3) input cloud}]"""
     objs = [o for o in objects if o.get('seg_points')]
@@ -60,13 +101,27 @@ def render(path, request_id, frame_id, objects):
         for ax, (a, b), t in zip(axs, ((0, 1), (0, 2)), ('top view (x-y), input in grey', 'side view (x-z), input in grey')):
             ax.set_aspect('equal', adjustable='datalim'); ax.set_xlabel('xyz'[a] + ' [m]'); ax.set_ylabel('xyz'[b] + ' [m]'); ax.set_title(t); ax.grid(alpha=.3)
     fig.tight_layout(); fig.savefig(path, dpi=90); plt.close(fig)   # request id and frame are in the page heading
+    for o in objs:
+        if o.get('salsa') and o['salsa'].get('parts'):
+            render_salsa(path.replace('.png', f"_salsa_{o['id']}.png"), o)
     return True
 
 
+def salsa_summary(o, png, d):
+    sp = o.get('salsa')
+    if not sp: return None
+    img = png.replace('.png', f"_salsa_{o['id']}.png") if png else None
+    if img and not os.path.exists(os.path.join(d, img)): img = None
+    c0 = (sp.get('candidates') or [None])[0]
+    return dict(command=sp.get('command'), error=sp.get('error'), screw=sp.get('screw'), png=img, n_cand=len(sp.get('candidates') or []),
+                poses=c0['poses'] if c0 else [])
+
+
 class WebView:
-    def __init__(self, directory, port, keep=20, host='0.0.0.0', on_target=None, target='', on_version=None, version='v0'):
+    def __init__(self, directory, port, keep=20, host='0.0.0.0', on_target=None, target='', on_version=None, version='v0',
+                 on_salsa=None, salsa=''):
         self.dir = directory; self.keep = keep; self.entries = []; self.on_target = on_target; self.target = target
-        self.on_version = on_version; self.version = version
+        self.on_version = on_version; self.version = version; self.on_salsa = on_salsa; self.salsa = salsa
         os.makedirs(directory, exist_ok=True); self.write_index()
         self.server = None
         if port:
@@ -79,16 +134,20 @@ class WebView:
     def set_version(self, version):
         self.version = version; self.write_index()
 
+    def set_salsa(self, salsa):
+        self.salsa = salsa; self.write_index()
+
     def add(self, request_id, frame_id, objects):
         safe = ''.join(ch if ch.isalnum() or ch in '._-' else '_' for ch in str(request_id))
         png = f'req_{safe}.png'
         if not render(os.path.join(self.dir, png), request_id, frame_id, objects): png = None
         rows = [dict(id=o['id'], label=o.get('label', ''), error=o.get('error'), seconds=o.get('seconds'), n_points=o.get('n_points'),
-                     segments=o.get('segments', [])) for o in objects]
+                     segments=o.get('segments', []), version=o.get('version', 'v0'), salsa=salsa_summary(o, png, self.dir)) for o in objects]
         self.entries.insert(0, dict(request_id=str(request_id), frame_id=frame_id, time=time.strftime('%H:%M:%S'), png=png, objects=rows))
         for old in self.entries[self.keep:]:
-            if old['png']:
-                try: os.remove(os.path.join(self.dir, old['png']))
+            for f in [old['png']] + [o['salsa']['png'] for o in old['objects'] if o.get('salsa') and o['salsa'].get('png')]:
+                if not f: continue
+                try: os.remove(os.path.join(self.dir, f))
                 except OSError: pass
         self.entries = self.entries[:self.keep]; self.write_index()
 
@@ -105,7 +164,10 @@ class WebView:
             '<form action="version" method="get">BITSI version: <select name="v">'
             + ''.join(f'<option value="{v}"{" selected" if v == self.version else ""}>{v}</option>' for v in ('v0', 'v3', 'v4', 'v5', 'v6'))
             + '</select> <button>Use</button> <small>v0 = main.py (default); v3-v6 = fitpart BITSI (v5: partial-cloud candidate; v6 experimental). '
-              'Changing it re-runs the last request.</small></form>']
+              'Changing it re-runs the last request.</small></form>',
+            '<form action="salsa" method="get">SALSA command: <input name="c" size="30" placeholder="off (segmentation only)" value="'
+            + e(self.salsa) + '"> <button>Plan</button> <small>task [amount] [reverse]: e.g. <i>lift 10 cm</i>, <i>turn 90 deg</i>, '
+              '<i>hinge</i>, <i>slide</i>, <i>press</i>, <i>pivot</i>, <i>handover</i>; empty = off. Re-plans the last request.</small></form>']
         if not self.entries: parts.append('<p>No results yet: trigger a detection in the perception pipeline.</p>')
         for en in self.entries:
             parts.append(f"<section><h2>request {e(en['request_id'])} <small>{e(en['time'])}, frame {e(str(en['frame_id']))}</small></h2>")
@@ -119,6 +181,24 @@ class WebView:
                     ibr = '' if s.get('ibr_ratio') is None else '%.3f' % s['ibr_ratio']
                     parts.append(f"<tr><td>{e(s['name'])}</td><td>{s['n_points']}</td><td>{f3(s.get('centroid'))}</td><td>{f3(s.get('obb_extent'))}</td><td>{ibr}</td></tr>")
                 parts.append('</table>')
+                sa = o.get('salsa')
+                if sa:
+                    parts.append(f"<h4>SALSA: {e(str(sa['command']))}</h4>")
+                    if sa['error']: parts.append(f"<p class='err'>{e(sa['error'])}</p>")
+                    if sa['png']: parts.append(f"<img src=\"{e(sa['png'])}?t={e(en['time'])}\" alt=\"SALSA plan\">")
+                    sc = sa['screw']
+                    if sc:
+                        amt = f"{sc['theta']:.3f} m" if sc['translation'] else f"{np.degrees(sc['theta']):.1f} deg"
+                        parts.append(f"<p>screw <b>{e(sc['task'])}</b>: axis {', '.join('%.3f' % v for v in sc['axis'])}, point "
+                                     f"{', '.join('%.3f' % v for v in sc['point'])}, {'translation' if sc['translation'] else 'rotation'} {amt}"
+                                     f"{', lift %.2f m first' % sc['lift'] if sc['lift'] else ''}; grasp part {sc['grasp_points']} points; "
+                                     f"{sa['n_cand']} candidate pose sequence(s) on /salsa/plan, best on /salsa/poses</p>")
+                    if sa['poses']:
+                        parts.append('<table><tr><th>#</th><th>pose</th><th>position x, y, z [m]</th><th>quaternion x, y, z, w</th><th>gripper</th></tr>')
+                        for k, q in enumerate(sa['poses']):
+                            parts.append(f"<tr><td>{k}</td><td>{e(q['name'])}</td><td>{', '.join('%.3f' % v for v in q['position'])}</td>"
+                                         f"<td>{', '.join('%.3f' % v for v in q['quaternion_xyzw'])}</td><td>{e(q['gripper'])}</td></tr>")
+                        parts.append('</table>')
             parts.append('</section>')
         parts.append('</body></html>')
         tmp = os.path.join(self.dir, '.index.tmp')
@@ -133,6 +213,11 @@ class QuietHandler(SimpleHTTPRequestHandler):
     def do_GET(self):
         from urllib.parse import urlparse, parse_qs
         u = urlparse(self.path)
+        if u.path == '/salsa' and self.view is not None:
+            c = parse_qs(u.query).get('c', [''])[0]
+            if self.view.on_salsa: self.view.on_salsa(c)
+            else: self.view.set_salsa(c)
+            self.send_response(303); self.send_header('Location', '/'); self.end_headers(); return
         if u.path == '/version' and self.view is not None:
             v = parse_qs(u.query).get('v', ['v0'])[0]
             if self.view.on_version: self.view.on_version(v)
