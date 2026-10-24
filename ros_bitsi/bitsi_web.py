@@ -39,12 +39,16 @@ def render(path, request_id, frame_id, objects):
 
 
 class WebView:
-    def __init__(self, directory, port, keep=20, host='0.0.0.0'):
-        self.dir = directory; self.keep = keep; self.entries = []; os.makedirs(directory, exist_ok=True); self.write_index()
+    def __init__(self, directory, port, keep=20, host='0.0.0.0', on_target=None, target=''):
+        self.dir = directory; self.keep = keep; self.entries = []; self.on_target = on_target; self.target = target
+        os.makedirs(directory, exist_ok=True); self.write_index()
         self.server = None
         if port:
-            self.server = ThreadingHTTPServer((host, port), partial(QuietHandler, directory=directory))
+            self.server = ThreadingHTTPServer((host, port), partial(QuietHandler, directory=directory, view=self))
             threading.Thread(target=self.server.serve_forever, daemon=True).start()
+
+    def set_target(self, target):
+        self.target = target; self.write_index()
 
     def add(self, request_id, frame_id, objects):
         safe = ''.join(ch if ch.isalnum() or ch in '._-' else '_' for ch in str(request_id))
@@ -65,7 +69,10 @@ class WebView:
             'body{font:14px system-ui,sans-serif;margin:16px;background:#fafafa;color:#222}img{max-width:100%;border:1px solid #ddd;background:#fff}',
             'table{border-collapse:collapse;margin:6px 0 18px}td,th{border:1px solid #ccc;padding:3px 8px;text-align:right}th{background:#eee}',
             '.err{color:#b00}section{margin-bottom:28px}</style></head><body><h1>BITSI Chebyshev segments</h1>',
-            '<p>Newest request first; refreshes every 5 s. Coordinates in the cloud frame (robot frame).</p>']
+            '<p>Newest request first; refreshes every 5 s. Coordinates in the cloud frame (robot frame).</p>',
+            '<form action="target" method="get">Run BITSI on: <input name="q" size="30" placeholder="all objects" value="' + e(self.target) + '"> ',
+            '<button>Set</button> <small>label text, comma-separated for several (e.g. <i>cup, red bottle</i>); empty = all objects</small></form>',
+            f"<p>Current target: <b>{e(self.target) or 'all objects'}</b></p>"]
         if not self.entries: parts.append('<p>No results yet: trigger a detection in the perception pipeline.</p>')
         for en in self.entries:
             parts.append(f"<section><h2>request {e(en['request_id'])} <small>{e(en['time'])}, frame {e(str(en['frame_id']))}</small></h2>")
@@ -86,4 +93,17 @@ class WebView:
 
 
 class QuietHandler(SimpleHTTPRequestHandler):
+    def __init__(self, *a, view=None, **k):
+        self.view = view; super().__init__(*a, **k)
+
+    def do_GET(self):
+        from urllib.parse import urlparse, parse_qs
+        u = urlparse(self.path)
+        if u.path == '/target' and self.view is not None:
+            q = parse_qs(u.query).get('q', [''])[0]
+            if self.view.on_target: self.view.on_target(q)
+            else: self.view.set_target(q)
+            self.send_response(303); self.send_header('Location', '/'); self.end_headers(); return
+        return super().do_GET()
+
     def log_message(self, *a): pass

@@ -50,6 +50,12 @@ def find_clouds(msg):
     return out
 
 
+def parse_target(text):
+    """'cup' / 'cup, red bottle' / 'cup;phone' -> ['cup', 'red bottle', 'phone'] (lower case); empty or 'all' -> [] (every object)."""
+    terms = [t.strip().lower() for t in str(text or '').replace(';', ',').split(',') if t.strip()]
+    return [] if terms in ([], ['all'], ['*']) else terms
+
+
 def layout(msg, depth=0):
     s = []
     for f, t in msg.get_fields_and_field_types().items():
@@ -66,22 +72,24 @@ class BitsiNode(Node):
                       strength_threshold=P('strength_threshold', .01), ibr_tolerance=P('ibr_tolerance', .07), voxel=P('voxel', .004))
         self.save_dir = P('save_dir', ''); clouds_topic = P('clouds_topic', '/perception/clouds'); result_topic = P('result_topic', '/perception/result')
         web_port = int(P('web_port', 8090)); web_dir = P('web_dir', '/tmp/bitsi_web')
+        self.target = parse_target(P('target', os.environ.get('BITSI_TARGET', '')))   # '' = every object; 'cup' or 'cup, red bottle' = only matching labels
         input_type = P('input_type', 'object_clouds')   # 'object_clouds' (seg_interfaces/ObjectClouds) or 'pointcloud2' (any sensor_msgs/PointCloud2 topic)
         qos = QoSProfile(depth=10, reliability=ReliabilityPolicy.RELIABLE, durability=DurabilityPolicy.TRANSIENT_LOCAL, history=HistoryPolicy.KEEP_LAST)
-        self.labels = {}; self.done = set(); self.lock = threading.Lock(); self.busy = False; self.logged = set()
+        self.labels = {}; self.done = set(); self.lock = threading.Lock(); self.busy = False; self.logged = set(); self.last_clouds = None
         if input_type == 'pointcloud2':   # one object per message; QoS best-effort-compatible for sensor-style publishers
             self.seq = 0; sq = QoSProfile(depth=5, reliability=ReliabilityPolicy.BEST_EFFORT, durability=DurabilityPolicy.VOLATILE)
             self.create_subscription(PointCloud2, clouds_topic, self.on_pointcloud2, sq)
         else:
             self.create_subscription(SegObjects, result_topic, self.on_result, qos)
             self.create_subscription(ObjectClouds, clouds_topic, self.on_clouds, qos)
+        self.create_subscription(String, '/bitsi/target', lambda m: self.set_target(m.data), 10)
         self.pub_json = self.create_publisher(String, '/bitsi/result', qos)
         self.pub_cloud = self.create_publisher(PointCloud2, '/bitsi/segments', qos)
         self.web = None
         if web_port:
-            try: self.web = WebView(web_dir, web_port); self.get_logger().info(f'web view: http://<this-machine-ip>:{web_port}/  (serving {web_dir})')
+            try: self.web = WebView(web_dir, web_port, on_target=self.set_target, target=', '.join(self.target)); self.get_logger().info(f'web view: http://<this-machine-ip>:{web_port}/  (serving {web_dir})')
             except OSError as e: self.get_logger().error(f'web view disabled, port {web_port}: {e}')
-        self.get_logger().info(f'input_type={input_type}; listening on {clouds_topic}' + ('' if input_type == 'pointcloud2' else f' and {result_topic}') + f'; params {self.p}; save_dir={self.save_dir or "(off)"}')
+        self.get_logger().info(f'input_type={input_type}; listening on {clouds_topic}' + ('' if input_type == 'pointcloud2' else f' and {result_topic}') + f'; target={", ".join(self.target) or "(all objects)"}; params {self.p}; save_dir={self.save_dir or "(off)"}')
 
     def log_layout(self, tag, msg):
         if tag not in self.logged:
@@ -96,10 +104,22 @@ class BitsiNode(Node):
                     lab = first_attr(e, LABEL_KEYS) if hasattr(e, 'get_fields_and_field_types') else None
                     if lab is not None:
                         oid = first_attr(e, ID_KEYS); self.labels[(str(req), str(i if oid is None else oid))] = str(lab)
+        if self.target and self.last_clouds is not None: self.on_clouds(self.last_clouds)   # labels may arrive after the clouds
+
+    def set_target(self, text):
+        self.target = parse_target(text)
+        self.get_logger().info(f'target set to: {", ".join(self.target) or "(all objects)"}')
+        if self.web is not None: self.web.set_target(', '.join(self.target))
+        if self.last_clouds is not None: self.on_clouds(self.last_clouds)   # re-check the retained request at once
+
+    def wanted(self, req, oid, lab):
+        if not self.target: return True
+        label = (lab or self.labels.get((req, oid), '')).lower()
+        return any(t == oid.lower() or (label and t in label) for t in self.target)
 
     def on_clouds(self, msg):
-        self.log_layout('ObjectClouds', msg); req = str(first_attr(msg, REQ_KEYS))
-        items = [(str(oid), lab, c) for oid, lab, c in find_clouds(msg) if (req, str(oid)) not in self.done]
+        self.log_layout('ObjectClouds', msg); req = str(first_attr(msg, REQ_KEYS)); self.last_clouds = msg
+        items = [(str(oid), lab, c) for oid, lab, c in find_clouds(msg) if (req, str(oid)) not in self.done and self.wanted(req, str(oid), lab)]
         if not items: return
         with self.lock:
             if self.busy: self.get_logger().info(f'busy; request {req} will be picked up from the next repeat'); return

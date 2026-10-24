@@ -18,6 +18,18 @@ python3 scripts/system.py detect "cup"   # in the pipeline repo; the node proces
 ```
 `run.sh` uses `--network host --ipc host -e ROS_DOMAIN_ID=${ROS_DOMAIN_ID:-0}` as the pipeline docs require.
 
+## Choosing the object
+By default every object in each request is segmented. To run BITSI only on some objects, give label text (case-insensitive,
+matched inside the pipeline's label; comma-separated for several; an object id also works):
+```bash
+sudo BITSI_TARGET="cup" BITSI_OUT=$HOME/bitsi_outputs ros_bitsi/run.sh run    # at start
+sudo ros_bitsi/run.sh target "red cup, phone"                                 # change while running
+sudo ros_bitsi/run.sh target ""                                               # back to all objects
+```
+The web page has the same box ("Run BITSI on"), and any node can publish `std_msgs/String` to `/bitsi/target`.
+Changing the target re-checks the last retained request immediately, so objects skipped earlier are processed without a
+new detection; objects already processed are not repeated.
+
 ## Web view
 While the node runs, open `http://<orin-ip>:8090/` in a browser. After every processed request it renders a matplotlib
 figure per object (3D view, top view x-y, side view x-z, points coloured by segment, centroids marked) and a table of
