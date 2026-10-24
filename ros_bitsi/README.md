@@ -18,6 +18,14 @@ python3 scripts/system.py detect "cup"   # in the pipeline repo; the node proces
 ```
 `run.sh` uses `--network host --ipc host -e ROS_DOMAIN_ID=${ROS_DOMAIN_ID:-0}` as the pipeline docs require.
 
+## Other point-cloud topics
+Any `sensor_msgs/PointCloud2` topic (one object per message) works too:
+```bash
+BITSI_ARGS="-p input_type:=pointcloud2 -p clouds_topic:=/your/cloud_topic" ros_bitsi/run.sh run
+```
+Frames arriving while BITSI is still running on the previous one are dropped. Results use the cloud's own header frame.
+Any node parameter can be passed the same way, e.g. `BITSI_ARGS="-p voxel:=0.006 -p gripper_width:=0.085"`.
+
 ## Topics
 | Direction | Topic | Type | QoS |
 |---|---|---|---|

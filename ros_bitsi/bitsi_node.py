@@ -64,13 +64,18 @@ class BitsiNode(Node):
         self.p = dict(gripper_width=P('gripper_width', .13), gripper_height=P('gripper_height', .07), epsilon=P('epsilon', 5e-3),
                       strength_threshold=P('strength_threshold', .01), ibr_tolerance=P('ibr_tolerance', .07), voxel=P('voxel', .004))
         self.save_dir = P('save_dir', ''); clouds_topic = P('clouds_topic', '/perception/clouds'); result_topic = P('result_topic', '/perception/result')
+        input_type = P('input_type', 'object_clouds')   # 'object_clouds' (seg_interfaces/ObjectClouds) or 'pointcloud2' (any sensor_msgs/PointCloud2 topic)
         qos = QoSProfile(depth=10, reliability=ReliabilityPolicy.RELIABLE, durability=DurabilityPolicy.TRANSIENT_LOCAL, history=HistoryPolicy.KEEP_LAST)
         self.labels = {}; self.done = set(); self.lock = threading.Lock(); self.busy = False; self.logged = set()
-        self.create_subscription(SegObjects, result_topic, self.on_result, qos)
-        self.create_subscription(ObjectClouds, clouds_topic, self.on_clouds, qos)
+        if input_type == 'pointcloud2':   # one object per message; QoS best-effort-compatible for sensor-style publishers
+            self.seq = 0; sq = QoSProfile(depth=5, reliability=ReliabilityPolicy.BEST_EFFORT, durability=DurabilityPolicy.VOLATILE)
+            self.create_subscription(PointCloud2, clouds_topic, self.on_pointcloud2, sq)
+        else:
+            self.create_subscription(SegObjects, result_topic, self.on_result, qos)
+            self.create_subscription(ObjectClouds, clouds_topic, self.on_clouds, qos)
         self.pub_json = self.create_publisher(String, '/bitsi/result', qos)
         self.pub_cloud = self.create_publisher(PointCloud2, '/bitsi/segments', qos)
-        self.get_logger().info(f'listening on {clouds_topic} and {result_topic}; params {self.p}; save_dir={self.save_dir or "(off)"}')
+        self.get_logger().info(f'input_type={input_type}; listening on {clouds_topic}' + ('' if input_type == 'pointcloud2' else f' and {result_topic}') + f'; params {self.p}; save_dir={self.save_dir or "(off)"}')
 
     def log_layout(self, tag, msg):
         if tag not in self.logged:
@@ -94,6 +99,13 @@ class BitsiNode(Node):
             if self.busy: self.get_logger().info(f'busy; request {req} will be picked up from the next repeat'); return
             self.busy = True
         threading.Thread(target=self.process, args=(req, items), daemon=True).start()
+
+    def on_pointcloud2(self, msg):
+        with self.lock:
+            if self.busy: return   # drop frames while BITSI runs on the previous one
+            self.busy = True
+        self.seq += 1; req = f'{msg.header.stamp.sec}.{msg.header.stamp.nanosec:09d}'
+        threading.Thread(target=self.process, args=(req, [('0', msg.header.frame_id, msg)]), daemon=True).start()
 
     def process(self, req, items):
         try:
