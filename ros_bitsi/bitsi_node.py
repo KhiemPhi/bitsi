@@ -16,7 +16,7 @@ import numpy as np
 import rclpy
 from rclpy.node import Node
 from rclpy.qos import QoSProfile, ReliabilityPolicy, DurabilityPolicy, HistoryPolicy
-from sensor_msgs.msg import PointCloud2, PointField
+from sensor_msgs.msg import Image, PointCloud2, PointField, RegionOfInterest
 from sensor_msgs_py import point_cloud2 as pc2
 from std_msgs.msg import String, Header
 from seg_interfaces.msg import ObjectClouds, SegObjects
@@ -50,6 +50,36 @@ def find_clouds(msg):
     return out
 
 
+def image_to_np(msg):
+    """sensor_msgs/Image -> numpy (H, W[, C]) without cv_bridge; colour returned as RGB."""
+    enc = msg.encoding.lower(); ch = {'rgb8': 3, 'bgr8': 3, 'rgba8': 4, 'bgra8': 4}.get(enc, 1)
+    dt = np.uint16 if enc in ('mono16', '16uc1') else np.uint8; isz = np.dtype(dt).itemsize
+    a = np.frombuffer(bytes(msg.data), dtype=dt).reshape(msg.height, msg.step // isz)[:, :msg.width * ch]
+    a = a.reshape(msg.height, msg.width, ch) if ch > 1 else a.reshape(msg.height, msg.width)
+    if enc.startswith('bgr'): a = a[..., [2, 1, 0]]
+    return a[..., :3] if ch == 4 else a
+
+
+def box_of(e):
+    """2D box (x0, y0, x1, y1) and mask of one SegObjects element: from a RegionOfInterest, a 4-number bbox/box field, or the
+    mask image's nonzero extent. Field names are found by introspection; returns (None, None) if nothing usable."""
+    box = mask = None
+    for f in e.get_fields_and_field_types():
+        v = getattr(e, f)
+        if isinstance(v, RegionOfInterest) and v.width > 0:
+            box = (v.x_offset, v.y_offset, v.x_offset + v.width, v.y_offset + v.height)
+        elif isinstance(v, Image) and v.width > 0 and mask is None:
+            try:
+                m = image_to_np(v); mask = (m if m.ndim == 2 else m.max(2)) > 0
+            except Exception: mask = None
+        elif 'box' in f.lower() and hasattr(v, '__len__') and len(v) == 4:
+            x0, y0, a2, b2 = [float(t) for t in v]
+            box = (x0, y0, a2, b2) if a2 > x0 and b2 > y0 else (x0, y0, x0 + a2, y0 + b2)
+    if box is None and mask is not None and mask.any():
+        ys, xs = np.nonzero(mask); box = (int(xs.min()), int(ys.min()), int(xs.max()) + 1, int(ys.max()) + 1)
+    return box, mask
+
+
 def parse_target(text):
     """'cup' / 'cup, red bottle' / 'cup;phone' -> ['cup', 'red bottle', 'phone'] (lower case); empty or 'all' -> [] (every object)."""
     terms = [t.strip().lower() for t in str(text or '').replace(';', ',').split(',') if t.strip()]
@@ -75,7 +105,7 @@ class BitsiNode(Node):
         self.target = parse_target(P('target', os.environ.get('BITSI_TARGET', '')))   # '' = every object; 'cup' or 'cup, red bottle' = only matching labels
         input_type = P('input_type', 'object_clouds')   # 'object_clouds' (seg_interfaces/ObjectClouds) or 'pointcloud2' (any sensor_msgs/PointCloud2 topic)
         qos = QoSProfile(depth=10, reliability=ReliabilityPolicy.RELIABLE, durability=DurabilityPolicy.TRANSIENT_LOCAL, history=HistoryPolicy.KEEP_LAST)
-        self.labels = {}; self.done = set(); self.lock = threading.Lock(); self.busy = False; self.logged = set(); self.last_clouds = None
+        self.boxes = {}; self.overlays = []; self.labels = {}; self.done = set(); self.lock = threading.Lock(); self.busy = False; self.logged = set(); self.last_clouds = None
         if input_type == 'pointcloud2':   # one object per message; QoS best-effort-compatible for sensor-style publishers
             self.seq = 0; sq = QoSProfile(depth=5, reliability=ReliabilityPolicy.BEST_EFFORT, durability=DurabilityPolicy.VOLATILE)
             self.create_subscription(PointCloud2, clouds_topic, self.on_pointcloud2, sq)
@@ -83,6 +113,9 @@ class BitsiNode(Node):
             self.create_subscription(SegObjects, result_topic, self.on_result, qos)
             self.create_subscription(ObjectClouds, clouds_topic, self.on_clouds, qos)
         self.create_subscription(String, '/bitsi/target', lambda m: self.set_target(m.data), 10)
+        overlay_topic = P('overlay_topic', '/perception/overlay')   # annotated camera image of the capture, shown on the web page
+        if overlay_topic:
+            self.create_subscription(Image, overlay_topic, self.on_overlay, QoSProfile(depth=2, reliability=ReliabilityPolicy.BEST_EFFORT))
         self.pub_json = self.create_publisher(String, '/bitsi/result', qos)
         self.pub_cloud = self.create_publisher(PointCloud2, '/bitsi/segments', qos)
         self.web = None
@@ -103,8 +136,22 @@ class BitsiNode(Node):
                 for i, e in enumerate(v):
                     lab = first_attr(e, LABEL_KEYS) if hasattr(e, 'get_fields_and_field_types') else None
                     if lab is not None:
-                        oid = first_attr(e, ID_KEYS); self.labels[(str(req), str(i if oid is None else oid))] = str(lab)
+                        oid = first_attr(e, ID_KEYS); key = (str(req), str(i if oid is None else oid)); self.labels[key] = str(lab)
+                        if key not in self.boxes:
+                            try: self.boxes[key] = box_of(e)
+                            except Exception: self.boxes[key] = (None, None)
         if self.target and self.last_clouds is not None: self.on_clouds(self.last_clouds)   # labels may arrive after the clouds
+
+    def on_overlay(self, msg):
+        if self.web is None: return
+        st = msg.header.stamp.sec + 1e-9 * msg.header.stamp.nanosec
+        if self.overlays and abs(self.overlays[-1][0] - st) < 1e-6: return   # the pipeline repeats the last capture
+        try: self.overlays = (self.overlays + [(st, image_to_np(msg))])[-4:]
+        except Exception as e: self.get_logger().warn(f'overlay not decodable ({msg.encoding}): {e}')
+
+    def overlay_for(self, stamp):
+        if not self.overlays: return None
+        return min(self.overlays, key=lambda o: abs(o[0] - stamp))[1]
 
     def set_target(self, text):
         self.target = parse_target(text)
@@ -146,10 +193,13 @@ class BitsiNode(Node):
                     for j, s in enumerate(r['segments']): seg_pts.append(s['points']); seg_ids.append(np.full(len(s['points']), len(seg_ids), np.float32))
                     rec['seg_points'] = [s['points'] for s in r['segments']]
                     rec['raw_points'] = pts
+                    st = hdr.stamp.sec + 1e-9 * hdr.stamp.nanosec; rec['image'] = self.overlay_for(st)
+                    rec['bbox2d'], rec['mask2d'] = self.boxes.get((req, oid), (None, None))
                     if self.save_dir: self.save(req, oid, label, r)
                 except Exception as e:
                     rec['error'] = f'{type(e).__name__}: {e}'
-                rec['seconds'] = round(time.time() - t0, 3); web_objs.append(rec); out['objects'].append({k: v for k, v in rec.items() if k not in ('seg_points', 'raw_points')})
+                rec['seconds'] = round(time.time() - t0, 3); web_objs.append(rec); out['objects'].append({k: v for k, v in rec.items() if k not in ('seg_points', 'raw_points', 'image', 'mask2d')}
+                                       | ({'bbox2d': [float(t) for t in rec['bbox2d']]} if rec.get('bbox2d') is not None else {}))
                 self.done.add((req, oid))
                 self.get_logger().info(f'request {req} object {oid} ({label}): {len(pts)} pts -> '
                                        f'{len(rec.get("segments", []))} segments in {rec["seconds"]}s' + (f' ERROR {rec["error"]}' if 'error' in rec else ''))

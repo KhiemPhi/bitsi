@@ -15,16 +15,34 @@ import matplotlib.pyplot as plt
 CMAP = plt.get_cmap('tab10')
 
 
+def image_panel(ax, o, margin=.6):
+    """Camera image of the capture cropped around the detector's 2D box (green), with the segmentation mask tinted."""
+    img = o.get('image'); box = o.get('bbox2d'); mask = o.get('mask2d'); ax.axis('off')
+    if img is None: ax.set_title('no camera image'); return
+    H, W = img.shape[:2]; ax.imshow(img, cmap='gray' if img.ndim == 2 else None)
+    if mask is not None and mask.shape[:2] == (H, W):
+        tint = np.zeros((H, W, 4)); tint[mask] = (0, 1, 0, .35); ax.imshow(tint)
+    if box is not None:
+        x0, y0, x1, y1 = box; w, h = x1 - x0, y1 - y0
+        ax.add_patch(plt.Rectangle((x0, y0), w, h, fill=False, ec='lime', lw=2))
+        ax.set_xlim(max(0, x0 - margin * w), min(W, x1 + margin * w)); ax.set_ylim(min(H, y1 + margin * h), max(0, y0 - margin * h))
+        ax.set_title(f"2D detection: box {int(w)}x{int(h)} px")
+    else: ax.set_title('2D detection: no box in message')
+
+
 def render(path, request_id, frame_id, objects):
     """objects: [{'label', 'id', 'segments': [{'name', 'centroid', ...}], 'seg_points': [(n,3)], 'raw_points': (N,3) input cloud}]"""
     objs = [o for o in objects if o.get('seg_points')]
     if not objs: return False
-    fig = plt.figure(figsize=(20, 4.8 * len(objs)))
+    ncol = 5 if any(o.get('image') is not None for o in objs) else 4
+    fig = plt.figure(figsize=(5 * ncol, 4.8 * len(objs)))
     for r, o in enumerate(objs):
         P = o['seg_points']; raw = o.get('raw_points'); raw = None if raw is None or len(raw) == 0 else np.asarray(raw)
         allp = np.concatenate(P + ([raw] if raw is not None else [])); lo, hi = allp.min(0), allp.max(0); c = (lo + hi) / 2; h = (hi - lo).max() / 2 * 1.1 + 1e-3
-        axr = fig.add_subplot(len(objs), 4, 4 * r + 1, projection='3d'); ax3 = fig.add_subplot(len(objs), 4, 4 * r + 2, projection='3d')
-        axs = [fig.add_subplot(len(objs), 4, 4 * r + k) for k in (3, 4)]
+        k0 = ncol - 4
+        if k0: image_panel(fig.add_subplot(len(objs), ncol, ncol * r + 1), o)
+        axr = fig.add_subplot(len(objs), ncol, ncol * r + k0 + 1, projection='3d'); ax3 = fig.add_subplot(len(objs), ncol, ncol * r + k0 + 2, projection='3d')
+        axs = [fig.add_subplot(len(objs), ncol, ncol * r + k0 + k) for k in (3, 4)]
         if raw is not None:   # full input cloud as received from the pipeline, before voxel/outlier filtering
             q = raw[::max(1, len(raw) // 6000)]
             axr.scatter(q[:, 0], q[:, 1], q[:, 2], s=1.5, c=q[:, 2], cmap='viridis')
