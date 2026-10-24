@@ -99,7 +99,8 @@ class BitsiNode(Node):
         super().__init__('bitsi_chebyshev')
         P = lambda n, d: self.declare_parameter(n, d).value
         self.p = dict(gripper_width=P('gripper_width', .13), gripper_height=P('gripper_height', .07), epsilon=P('epsilon', 5e-3),
-                      strength_threshold=P('strength_threshold', .01), ibr_tolerance=P('ibr_tolerance', .07), voxel=P('voxel', .004))
+                      strength_threshold=P('strength_threshold', .01), ibr_tolerance=P('ibr_tolerance', .07), voxel=P('voxel', .004),
+                      version=P('bitsi_version', os.environ.get('BITSI_VERSION', 'v0')), up=list(P('up', [0., 0., 1.])))   # up: gravity in the cloud frame (v4-v6)
         self.save_dir = P('save_dir', ''); clouds_topic = P('clouds_topic', '/perception/clouds'); result_topic = P('result_topic', '/perception/result')
         web_port = int(P('web_port', 8090)); web_dir = P('web_dir', '/tmp/bitsi_web')
         self.target = parse_target(P('target', os.environ.get('BITSI_TARGET', '')))   # '' = every object; 'cup' or 'cup, red bottle' = only matching labels
@@ -113,6 +114,7 @@ class BitsiNode(Node):
             self.create_subscription(SegObjects, result_topic, self.on_result, qos)
             self.create_subscription(ObjectClouds, clouds_topic, self.on_clouds, qos)
         self.create_subscription(String, '/bitsi/target', lambda m: self.set_target(m.data), 10)
+        self.create_subscription(String, '/bitsi/version', lambda m: self.set_version(m.data), 10)
         overlay_topic = P('overlay_topic', '/perception/overlay')   # annotated camera image of the capture, shown on the web page
         if overlay_topic:
             self.create_subscription(Image, overlay_topic, self.on_overlay, QoSProfile(depth=2, reliability=ReliabilityPolicy.BEST_EFFORT))
@@ -120,7 +122,7 @@ class BitsiNode(Node):
         self.pub_cloud = self.create_publisher(PointCloud2, '/bitsi/segments', qos)
         self.web = None
         if web_port:
-            try: self.web = WebView(web_dir, web_port, on_target=self.set_target, target=', '.join(self.target)); self.get_logger().info(f'web view: http://<this-machine-ip>:{web_port}/  (serving {web_dir})')
+            try: self.web = WebView(web_dir, web_port, on_target=self.set_target, target=', '.join(self.target), on_version=self.set_version, version=self.p['version']); self.get_logger().info(f'web view: http://<this-machine-ip>:{web_port}/  (serving {web_dir})')
             except OSError as e: self.get_logger().error(f'web view disabled, port {web_port}: {e}')
         self.get_logger().info(f'input_type={input_type}; listening on {clouds_topic}' + ('' if input_type == 'pointcloud2' else f' and {result_topic}') + f'; target={", ".join(self.target) or "(all objects)"}; params {self.p}; save_dir={self.save_dir or "(off)"}')
 
@@ -153,6 +155,14 @@ class BitsiNode(Node):
         if not self.overlays: return None
         return min(self.overlays, key=lambda o: abs(o[0] - stamp))[1]
 
+    def set_version(self, text):
+        from bitsi_core import VERSIONS
+        v = str(text).strip().lower(); v = v if v.startswith('v') else 'v' + v
+        if v not in VERSIONS: self.get_logger().error(f'unknown BITSI version {text!r}; choose from {VERSIONS}'); return
+        self.p['version'] = v; self.get_logger().info(f'BITSI version set to {v}')
+        if self.web is not None: self.web.set_version(v)
+        if self.last_clouds is not None: self.on_clouds(self.last_clouds)   # re-run the retained request with the new version
+
     def set_target(self, text):
         self.target = parse_target(text)
         self.get_logger().info(f'target set to: {", ".join(self.target) or "(all objects)"}')
@@ -166,7 +176,7 @@ class BitsiNode(Node):
 
     def on_clouds(self, msg):
         self.log_layout('ObjectClouds', msg); req = str(first_attr(msg, REQ_KEYS)); self.last_clouds = msg
-        items = [(str(oid), lab, c) for oid, lab, c in find_clouds(msg) if (req, str(oid)) not in self.done and self.wanted(req, str(oid), lab)]
+        items = [(str(oid), lab, c) for oid, lab, c in find_clouds(msg) if (req, str(oid), self.p['version']) not in self.done and self.wanted(req, str(oid), lab)]
         if not items: return
         with self.lock:
             if self.busy: self.get_logger().info(f'busy; request {req} will be picked up from the next repeat'); return
@@ -200,7 +210,7 @@ class BitsiNode(Node):
                     rec['error'] = f'{type(e).__name__}: {e}'
                 rec['seconds'] = round(time.time() - t0, 3); web_objs.append(rec); out['objects'].append({k: v for k, v in rec.items() if k not in ('seg_points', 'raw_points', 'image', 'mask2d')}
                                        | ({'bbox2d': [float(t) for t in rec['bbox2d']]} if rec.get('bbox2d') is not None else {}))
-                self.done.add((req, oid))
+                self.done.add((req, oid, self.p['version']))
                 self.get_logger().info(f'request {req} object {oid} ({label}): {len(pts)} pts -> '
                                        f'{len(rec.get("segments", []))} segments in {rec["seconds"]}s' + (f' ERROR {rec["error"]}' if 'error' in rec else ''))
             if hdr is not None:

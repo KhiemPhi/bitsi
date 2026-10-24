@@ -18,6 +18,25 @@ python3 scripts/system.py detect "cup"   # in the pipeline repo; the node proces
 ```
 `run.sh` uses `--network host --ipc host -e ROS_DOMAIN_ID=${ROS_DOMAIN_ID:-0}` as the pipeline docs require.
 
+## Choosing the BITSI version
+| version | algorithm |
+|---|---|
+| `v0` (default) | `main.py`: BITC sweep along one bounding-box axis, Chebyshev inflections, IBR fusion |
+| `v3` | `fitpart/bitsi3.py`: primitive-relative BITC channels, Chebyshev pieces, MDL cuts |
+| `v4` | `fitpart/bitsi4.py` with `up`: v3 + children by code length, gravity-axis candidate (robot setting) |
+| `v5` | `fitpart/bitsi5.py` partial-cloud candidate (`axis_rule=residual, spine_coding=free, partial_cuts=True`) |
+| `v6` | `fitpart/bitsi6.py`, experimental; only available if that file is committed (it is not in the repo yet) |
+
+```bash
+sudo BITSI_VERSION=v4 BITSI_OUT=$HOME/bitsi_outputs ros_bitsi/run.sh run   # at start
+sudo ros_bitsi/run.sh version v3                                          # switch while running
+```
+or the "BITSI version" menu on the web page, or `std_msgs/String` on `/bitsi/version`. Switching re-runs the last request,
+so versions can be compared on the same capture. v3-v6 estimate normals (30 neighbours, oriented away from the centroid);
+v4-v6 use gravity `up` = `[0, 0, 1]` in the cloud frame (`-p up:="[0.0, 0.0, 1.0]"` if base_link's z is not up). v3+ parts
+are named `part_k` (largest first) and have no IBR value. On a synthetic partial drill (handle + barrel), v3 and v4 split
+handle from barrel (2 parts, 0.5 s), v0 gave 5 slabs along height, v5 kept one part.
+
 ## Choosing the object
 By default every object in each request is segmented. To run BITSI only on some objects, give label text (case-insensitive,
 matched inside the pipeline's label; comma-separated for several; an object id also works):

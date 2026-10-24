@@ -11,6 +11,9 @@ RUN python3 -m pip install --no-cache-dir "numpy==1.24.4" "numba==0.58.1" "open3
 # an installed `bitsi_slicer` would shadow the outer folder and break that import.
 COPY bitsi_slicer /opt/bitsi/bitsi_slicer
 COPY main.py /opt/bitsi/main.py
+# fitpart BITSI v3-v6 (only the Python sources; the folder also holds figures, data and results)
+COPY fitpart/*.py /opt/bitsi/fitpart/
+COPY fitpart/bitsi2 /opt/bitsi/fitpart/bitsi2
 COPY ros_bitsi/bitsi_core.py ros_bitsi/bitsi_web.py ros_bitsi/bitsi_node.py /opt/bitsi/
 WORKDIR /opt/bitsi
 ENV PYTHONPATH=/opt/bitsi

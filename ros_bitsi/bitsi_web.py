@@ -56,7 +56,7 @@ def render(path, request_id, frame_id, objects):
                 ax.scatter(q[:, a], q[:, b], s=1.5, color=col); m = s['centroid']
                 ax.scatter([m[a]], [m[b]], s=60, color=col, edgecolor='k', marker='X', zorder=3); ax.annotate(s['name'].replace('segment_', 's'), (m[a], m[b]), fontsize=8)
         ax3.set_xlabel('x'); ax3.set_ylabel('y'); ax3.set_zlabel('z'); ax3.legend(fontsize=7, markerscale=5, loc='upper left')
-        ax3.set_title(f"{o.get('label') or 'object'} (id {o['id']}): {len(P)} segments")
+        ax3.set_title(f"{o.get('label') or 'object'} (id {o['id']}): BITSI {o.get('version', 'v0')}, {len(P)} segments")
         for ax, (a, b), t in zip(axs, ((0, 1), (0, 2)), ('top view (x-y), input in grey', 'side view (x-z), input in grey')):
             ax.set_aspect('equal', adjustable='datalim'); ax.set_xlabel('xyz'[a] + ' [m]'); ax.set_ylabel('xyz'[b] + ' [m]'); ax.set_title(t); ax.grid(alpha=.3)
     fig.tight_layout(); fig.savefig(path, dpi=90); plt.close(fig)   # request id and frame are in the page heading
@@ -64,8 +64,9 @@ def render(path, request_id, frame_id, objects):
 
 
 class WebView:
-    def __init__(self, directory, port, keep=20, host='0.0.0.0', on_target=None, target=''):
+    def __init__(self, directory, port, keep=20, host='0.0.0.0', on_target=None, target='', on_version=None, version='v0'):
         self.dir = directory; self.keep = keep; self.entries = []; self.on_target = on_target; self.target = target
+        self.on_version = on_version; self.version = version
         os.makedirs(directory, exist_ok=True); self.write_index()
         self.server = None
         if port:
@@ -74,6 +75,9 @@ class WebView:
 
     def set_target(self, target):
         self.target = target; self.write_index()
+
+    def set_version(self, version):
+        self.version = version; self.write_index()
 
     def add(self, request_id, frame_id, objects):
         safe = ''.join(ch if ch.isalnum() or ch in '._-' else '_' for ch in str(request_id))
@@ -97,18 +101,22 @@ class WebView:
             '<p>Newest request first; refreshes every 5 s. Coordinates in the cloud frame (robot frame).</p>',
             '<form action="target" method="get">Run BITSI on: <input name="q" size="30" placeholder="all objects" value="' + e(self.target) + '"> ',
             '<button>Set</button> <small>label text, comma-separated for several (e.g. <i>cup, red bottle</i>); empty = all objects</small></form>',
-            f"<p>Current target: <b>{e(self.target) or 'all objects'}</b></p>"]
+            f"<p>Current target: <b>{e(self.target) or 'all objects'}</b></p>",
+            '<form action="version" method="get">BITSI version: <select name="v">'
+            + ''.join(f'<option value="{v}"{" selected" if v == self.version else ""}>{v}</option>' for v in ('v0', 'v3', 'v4', 'v5', 'v6'))
+            + '</select> <button>Use</button> <small>v0 = main.py (default); v3-v6 = fitpart BITSI (v5: partial-cloud candidate; v6 experimental). '
+              'Changing it re-runs the last request.</small></form>']
         if not self.entries: parts.append('<p>No results yet: trigger a detection in the perception pipeline.</p>')
         for en in self.entries:
             parts.append(f"<section><h2>request {e(en['request_id'])} <small>{e(en['time'])}, frame {e(str(en['frame_id']))}</small></h2>")
             if en['png']: parts.append(f"<img src=\"{e(en['png'])}?t={e(en['time'])}\" alt=\"BITSI segments\">")
             for o in en['objects']:
-                parts.append(f"<h3>{e(str(o['label']) or 'object')} (id {e(str(o['id']))}): {o.get('n_points')} points, {o.get('seconds')} s</h3>")
+                parts.append(f"<h3>{e(str(o['label']) or 'object')} (id {e(str(o['id']))}): {o.get('n_points')} points, {o.get('seconds')} s, BITSI {e(str(o.get('version', 'v0')))}</h3>")
                 if o['error']: parts.append(f"<p class='err'>{e(o['error'])}</p>"); continue
                 parts.append('<table><tr><th>segment</th><th>points</th><th>centroid x, y, z [m]</th><th>OBB extent [m]</th><th>IBR</th></tr>')
                 for s in o['segments']:
                     f3 = lambda v: ', '.join(f'{x:.3f}' for x in v) if v else ''
-                    parts.append(f"<tr><td>{e(s['name'])}</td><td>{s['n_points']}</td><td>{f3(s.get('centroid'))}</td><td>{f3(s.get('obb_extent'))}</td><td>{s.get('ibr_ratio', 0):.3f}</td></tr>")
+                    parts.append(f"<tr><td>{e(s['name'])}</td><td>{s['n_points']}</td><td>{f3(s.get('centroid'))}</td><td>{f3(s.get('obb_extent'))}</td><td>{'' if s.get('ibr_ratio') is None else f"{s['ibr_ratio']:.3f}"}</td></tr>")
                 parts.append('</table>')
             parts.append('</section>')
         parts.append('</body></html>')
@@ -124,6 +132,11 @@ class QuietHandler(SimpleHTTPRequestHandler):
     def do_GET(self):
         from urllib.parse import urlparse, parse_qs
         u = urlparse(self.path)
+        if u.path == '/version' and self.view is not None:
+            v = parse_qs(u.query).get('v', ['v0'])[0]
+            if self.view.on_version: self.view.on_version(v)
+            else: self.view.set_version(v)
+            self.send_response(303); self.send_header('Location', '/'); self.end_headers(); return
         if u.path == '/target' and self.view is not None:
             q = parse_qs(u.query).get('q', [''])[0]
             if self.view.on_target: self.view.on_target(q)
