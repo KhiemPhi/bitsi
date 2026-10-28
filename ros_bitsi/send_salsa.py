@@ -13,6 +13,8 @@ usage:
   python3 send_salsa.py plan.txt --dry-run                     # print the waypoints, send nothing
   python3 send_salsa.py plan.txt --tcp-offset 0.13             # send candidate 0 of the first planned object
   python3 send_salsa.py --ros --object drill --candidate 1     # read /salsa/plan live (inside a sourced ROS shell)
+  python3 send_salsa.py plan.txt --only 0                      # just waypoint 0 (pre_grasp)
+  python3 send_salsa.py plan.txt --step                        # one waypoint at a time, Enter before each
 """
 import argparse
 import json
@@ -43,6 +45,9 @@ ap.add_argument("--min-z", type=float, default=-0.05, help="refuse waypoints bel
 ap.add_argument("--max-reach", type=float, default=0.90, help="refuse waypoints farther than this from the origin (m)")
 ap.add_argument("--proto-dir", default="", help="directory holding common_pb2.py / commands_pb2.py")
 ap.add_argument("--dry-run", action="store_true", help="print the waypoints, send nothing")
+ap.add_argument("--only", type=int, default=None, help="send just this one waypoint index (see --dry-run for indices)")
+ap.add_argument("--step", action="store_true",
+                help="send the waypoints one at a time; press Enter before each (after the robot has stopped)")
 ap.add_argument("--csv", default="", help="write the poses as 4x4 matrices for the CSV pose sender instead of sending")
 ap.add_argument("--yes", action="store_true", help="do not ask for confirmation before sending")
 args = ap.parse_args()
@@ -127,8 +132,14 @@ if args.dry_run or args.csv:
     sys.exit(0)
 if plan.get("frame_id") and plan["frame_id"] not in (args.frame, f"{args.frame}_link"):
     print(f"WARNING: plan frame '{plan['frame_id']}' vs server frame '{args.frame}'")
-if not args.yes and input(f"send {len(poses)} waypoints to {args.addr}? [y/N] ").strip().lower() != "y":
-    sys.exit("not sent")
+if args.only is not None and not 0 <= args.only < len(poses):
+    sys.exit(f"--only {args.only}: the plan has waypoints 0..{len(poses) - 1}")
+# batches of waypoint indices, each sent as its own sequence
+batches = [[args.only]] if args.only is not None else [[i] for i in range(len(poses))] if args.step else [list(range(len(poses)))]
+if not args.step and not args.yes:
+    what = f"waypoint {args.only} ({poses[args.only][0]})" if args.only is not None else f"{len(poses)} waypoints"
+    if input(f"send {what} to {args.addr}? [y/N] ").strip().lower() != "y":
+        sys.exit("not sent")
 
 if args.proto_dir:
     sys.path.insert(0, args.proto_dir)
@@ -137,25 +148,6 @@ import common_pb2 as common
 import commands_pb2 as cmds
 
 ACTIONS = {"open": common.GRIPPER_OPEN, "close": common.GRIPPER_CLOSE}
-cmd = cmds.Command()
-cmd.goals.sequence_id = int(time.time())
-cmd.goals.frame = args.frame
-for i, (name, t, R) in enumerate(poses):
-    qx, qy, qz, qw = Rotation.from_matrix(R).as_quat()
-    w = cmd.goals.waypoints.add()
-    w.pose.x, w.pose.y, w.pose.z = t
-    w.pose.qx, w.pose.qy, w.pose.qz, w.pose.qw = qx, qy, qz, qw
-    w.segment_duration = args.seg_time
-    if i in acts:
-        w.gripper = ACTIONS[acts[i]]
-        w.dwell_time = args.dwell
-
-
-def describe(f):
-    where = f"waypoint {f.waypoint_index} ({poses[f.waypoint_index][0]})" if 0 <= f.waypoint_index < len(poses) else "sequence"
-    return f"{common.FailureCode.Name(f.code)} at {where}: {f.message} ({f.waypoints_planned} planned OK)"
-
-
 ctx = zmq.Context()
 sock = ctx.socket(zmq.REQ)
 sock.setsockopt(zmq.RCVTIMEO, 5000)
@@ -170,10 +162,30 @@ def rpc(command, reply_cls):
     return reply
 
 
-try:
+def send(idx):
+    """Send waypoints idx (plan indices) as one sequence; wait for the planning result. False if it failed."""
+    cmd = cmds.Command()
+    cmd.goals.sequence_id = int(time.time() * 1000) % 2**31
+    cmd.goals.frame = args.frame
+    for i in idx:
+        name, t, R = poses[i]
+        qx, qy, qz, qw = Rotation.from_matrix(R).as_quat()
+        w = cmd.goals.waypoints.add()
+        w.pose.x, w.pose.y, w.pose.z = t
+        w.pose.qx, w.pose.qy, w.pose.qz, w.pose.qw = qx, qy, qz, qw
+        w.segment_duration = args.seg_time
+        if i in acts:
+            w.gripper = ACTIONS[acts[i]]
+            w.dwell_time = args.dwell
+
+    def describe(f):
+        k = f.waypoint_index
+        where = f"waypoint {idx[k]} ({poses[idx[k]][0]})" if 0 <= k < len(idx) else "sequence"
+        return f"{common.FailureCode.Name(f.code)} at {where}: {f.message} ({f.waypoints_planned} planned OK)"
+
     reply = rpc(cmd, cmds.CommandReply)
     if not reply.accepted:
-        sys.exit("rejected: " + describe(reply.failure))
+        print("rejected: " + describe(reply.failure)); return False
     print("accepted sequence", reply.sequence_id)
     deadline = time.time() + 60
     while time.time() < deadline:
@@ -185,10 +197,20 @@ try:
             continue
         print("plan status:", cmds.PlanStatus.Name(res.status))
         if res.status == cmds.PLAN_FAILED:
-            sys.exit(f"planning failed: {describe(res.failure)}  (try --candidate {args.candidate + 1})")
-        print("executing")
-        break
-    else:
-        sys.exit("planning did not finish within 60 s")
+            print(f"planning failed: {describe(res.failure)}"); return False
+        print("executing"); return True
+    print("planning did not finish within 60 s"); return False
+
+
+try:
+    for b in batches:
+        if args.step:
+            i = b[0]; name, t, _ = poses[i]
+            a = input(f"[{i}] {name} pos=({t[0]:.3f}, {t[1]:.3f}, {t[2]:.3f}) gripper={acts.get(i, '-')}: "
+                      f"Enter = send, s = skip, q = quit (wait until the robot has stopped) ").strip().lower()
+            if a == "q": sys.exit("stopped")
+            if a == "s": continue
+        if not send(b):
+            sys.exit(f"stopped (try --candidate {args.candidate + 1})" if not args.step else "stopped")
 except zmq.Again:
     sys.exit("no reply from server (is it running, and is the address right?)")
