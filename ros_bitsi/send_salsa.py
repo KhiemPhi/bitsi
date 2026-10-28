@@ -19,6 +19,7 @@ usage:
 """
 import argparse
 import json
+import os
 import sys
 import time
 import numpy as np
@@ -42,6 +43,11 @@ ap.add_argument("--base-yaw", type=float, default=0.0,
 ap.add_argument("--tool-yaw", type=float, default=0.0,
                 help="degrees about the approach axis applied to the gripper orientation only (use when the server's tool "
                      "frame is turned relative to SALSA's: x, y=closing, z=approach)")
+ap.add_argument("--socp", action="store_true",
+                help="re-rank the candidates with the tograsp-socp grasp metric for the plan's task screw; --candidate "
+                     "then indexes the SOCP order (0 = best)")
+ap.add_argument("--tograsp-dir", default="~/tograsp-socp", help="clone of github.com/apat20/tograsp-socp (for --socp)")
+ap.add_argument("--weight", type=float, default=10.0, help="object weight in N for --socp (tograsp config: 10 N)")
 ap.add_argument("--frame", default="base", help="frame name sent to the server (the plan is in its own frame_id)")
 ap.add_argument("--addr", default="tcp://localhost:5555")
 ap.add_argument("--seg-time", type=float, default=0.0,
@@ -61,6 +67,62 @@ if not args.plan and not args.ros:
     ap.error("give a plan file or --ros")
 if args.tograsp:     # tograsp-socp/config.py: G_DELTA, G_DELTA_INTER (grasp centre -> flange, along the approach z)
     args.tcp_offset, args.pregrasp_offset = 0.1434, 0.1800 - 0.1434
+
+
+def socp_rank(obj, cands):
+    """Re-rank SALSA's candidates with the tograsp-socp task-dependent grasp metric (socp_module.two_finger_gfop,
+    parameters from its config.py): the largest force along the task screw (pure translation, e.g. lift) or moment
+    about it (rotation / general screw) that the two soft-finger contacts can apply while holding the object's weight.
+    Wrenches are taken at the object's centroid (translation) or at the screw axis point (rotation)."""
+    sys.path.insert(0, os.path.expanduser(args.tograsp_dir))
+    import config as TC
+    import socp_module.two_finger_gfop as TG
+    from socp_module.two_finger_gfop import TwoFingerGFOP
+    p_hat = lambda p: np.array([[0, -p[2, 0], p[1, 0]], [p[2, 0], 0, -p[0, 0]], [-p[1, 0], p[0, 0], 0]], float)
+    TG.get_skew_symmetric = p_hat     # same matrix; the original float() on 1-element arrays fails under numpy >= 2
+    sc = obj.get("screw") or {}
+    if not sc.get("axis"):
+        sys.exit("--socp: the plan has no task screw for this object")
+    u = np.asarray(sc["axis"], float); u /= np.linalg.norm(u)
+    trans = bool(sc.get("translation")) or sc.get("pitch") is None
+    parts = [p for p in obj.get("parts", []) if p.get("centroid") is not None]
+    com = (np.average([p["centroid"] for p in parts], axis=0, weights=[p.get("n_points", 1) for p in parts])
+           if parts else np.mean([np.mean(c["contacts"], 0) for c in cands if c.get("contacts")], 0))
+    origin = com if trans else np.asarray(sc["point"], float)
+    W = np.array([0, 0, -args.weight])                         # weight along -z of the plan frame (base_link z up)
+    F_ext = np.r_[W, np.cross(com - origin, W)].reshape(6, 1)
+
+    def frame(n):                                              # contact frame: z = inward normal
+        x = np.cross(n, [1, 0, 0] if abs(n[0]) < .9 else [0, 1, 0]); x /= np.linalg.norm(x)
+        return np.stack([x, np.cross(n, x), n], 1)
+
+    scored = []
+    for c in cands:
+        if not c.get("contacts"):
+            scored.append((np.nan, c)); continue
+        c1, c2 = (np.asarray(p, float) for p in c["contacts"])
+        n1 = (c2 - c1) / np.linalg.norm(c2 - c1)
+        g = TwoFingerGFOP()
+        g.R_OC_1, g.R_OC_2 = frame(n1), frame(-n1)
+        g.p_OC_1, g.p_OC_2 = (c1 - origin).reshape(3, 1), (c2 - origin).reshape(3, 1)
+        g.unit_vector = u.reshape(3, 1)
+        g.F, g.contact_model, g.F_external = TC.F, TC.CONTACT_MODEL, F_ext
+        g.e11, g.e12, g.e1r, g.mu1 = TC.E11, TC.E12, TC.E1R, TC.MU1
+        g.e21, g.e22, g.e2r, g.mu2 = TC.E21, TC.E22, TC.E2R, TC.MU2
+        g.sigma, g.mu = TC.SIGMA, TC.MU
+        try:
+            m = g.compute_metric_force() if trans else g.compute_metric_moment()
+        except Exception as e:
+            print(f"  SOCP error on candidate {c.get('rank')}: {e}"); m = np.nan
+        scored.append((float(m) if m is not None else np.nan, c))
+    scored.sort(key=lambda s: -np.inf if np.isnan(s[0]) else -s[0])
+    unit = "N along the screw" if trans else "N m about the screw"
+    print(f"SOCP ranking ({'force' if trans else 'moment'} metric, weight {args.weight} N, {len(cands)} candidates):")
+    for k, (m, c) in enumerate(scored):
+        print(f"  new {k}: SALSA candidate {c.get('rank')}  metric {'infeasible' if np.isnan(m) else f'{m:.2f} {unit}'}")
+    if all(np.isnan(m) for m, _ in scored):
+        sys.exit("--socp: no candidate has a feasible SOCP (check --weight, or the contacts)")
+    return [c for _, c in scored]
 
 
 def load_plan():
@@ -97,6 +159,8 @@ if not objs:
     sys.exit("no object with SALSA candidates in the plan" + (f" ({errs})" if errs else ""))
 obj = objs[0]
 cands = obj["candidates"]
+if args.socp:
+    cands = socp_rank(obj, cands)
 if not 0 <= args.candidate < len(cands):
     sys.exit(f"--candidate {args.candidate}: the plan has {len(cands)} candidate(s) for {obj['label']}")
 seq = cands[args.candidate]["poses"]
