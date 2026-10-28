@@ -1,22 +1,84 @@
-# BITSI Chebyshev consumer for the robot perception pipeline
+# BITSI + SALSA on the robot (Jetson Orin)
 
-A separate container on the Orin that reads the pipeline's robot-frame object clouds and runs BITSI Chebyshev segmentation
-(`main.py` pipeline: build_cloud_object → auto_thickness → bitsi_metric → Chebyshev fit/inflections → segment tree → fuse →
-rename). Motion planning is not done here; it consumes `/bitsi/result` and `/bitsi/segments`.
+Our ROS 2 node runs next to the robot's perception pipeline. For each detected object it:
+1. segments the object's point cloud into parts (**BITSI**),
+2. picks the part to grasp and the screw motion to follow for a task command (**SALSA**, e.g. `lift 10 cm`),
+3. outputs a sequence of end-effector poses for a separate motion planner.
 
-It is a NEW image built `FROM ros-realsense:humble`, which already holds ROS 2 Humble and the generated `seg_interfaces`
-(`/opt/perception_interfaces`). No pipeline container or image is modified.
-
-## On the Orin
-```bash
-# copy ~/bitsi (main.py, bitsi_slicer/, ros_bitsi/) to the Orin, then from its root:
-ros_bitsi/run.sh build          # docker build -f ros_bitsi/Dockerfile -t bitsi-ros:humble .
-python3 scripts/system.py start # in the pipeline repo, if not running
-ros_bitsi/run.sh test           # imports + checks that /perception/* topics are visible (same ROS_DOMAIN_ID)
-ros_bitsi/run.sh run            # start the node; outputs saved under ~/bitsi_outputs (BITSI_OUT to change)
-python3 scripts/system.py detect "cup"   # in the pipeline repo; the node processes the clouds of this request
 ```
-`run.sh` uses `--network host --ipc host -e ROS_DOMAIN_ID=${ROS_DOMAIN_ID:-0}` as the pipeline docs require.
+RealSense -> perception pipeline (GroundingDINO + SAM, its own containers)
+               | /perception/clouds, /perception/result, /perception/overlay
+               v
+           bitsi-ros:humble (this folder) --> /bitsi/result, /bitsi/segments      (parts)
+                                          --> /salsa/plan, /salsa/poses          (grasp + pose sequence)
+                                          --> web view on :8090
+```
+Motion planning, IK and execution are **not** done here. The image is built `FROM ros-realsense:humble` (ROS 2 Humble +
+the pipeline's `seg_interfaces`); no pipeline image or container is modified.
+
+## Quick start (on the Orin)
+Terminal 1 is the node; terminal 2 is for detections and live changes. Docker needs `sudo`; put environment
+variables **after** `sudo` (sudo drops the environment) and give `BITSI_OUT` as a full path (sudo's `$HOME` is `/root`).
+
+**1. Start the perception pipeline** (in the pipeline repo):
+```bash
+python3 scripts/system.py start
+```
+Keep `geometry.voxel_m` at `0.003` in its `config/system.json` (at 0.009 a bottle had only 163 points). After editing:
+`scripts/system.py stop` then `start`.
+
+**2. Build and test the node** (in the `bitsi` clone, branch `fitpart`):
+```bash
+git pull
+sudo ros_bitsi/run.sh build     # docker build -f ros_bitsi/Dockerfile -t bitsi-ros:humble .
+sudo ros_bitsi/run.sh test      # prints "imports ok" and the /perception/* topics
+```
+No `/perception` topics: the pipeline is not running or `ROS_DOMAIN_ID` differs (`run.sh` passes `${ROS_DOMAIN_ID:-0}`).
+
+**3. Run the node** (terminal 1):
+```bash
+sudo SALSA_COMMAND="lift 10 cm" BITSI_TARGET="power drill" BITSI_VERSION=v4 \
+     BITSI_OUT=/home/irslorin/bitsi_outputs ros_bitsi/run.sh run
+```
+
+**4. Detect an object** (terminal 2, pipeline repo; or the Detect box on `http://<orin-ip>:8080`):
+```bash
+python3 scripts/system.py detect "power drill"
+```
+The node's inputs are transient-local, so it can also be started after the detection.
+
+**5. Check the result**
+- Web view `http://<orin-ip>:8090` (refreshes every 5 s): camera crop with the detector's box and mask, the input cloud,
+  BITSI parts, and the SALSA figure (grasp part in red, screw axis, pose path). For `lift 10 cm` on a drill, the red part
+  should be the handle and the path should rise ~10 cm.
+- Topics: `ros2 topic echo /salsa/poses --once`, `ros2 topic echo /salsa/plan --once`; `/salsa/poses` and
+  `/bitsi/segments` can be shown in RViz (frame `base_link`).
+- Files: `BITSI_OUT/` holds a PLY per part and `bitsi.json` per object.
+
+**6. Change things while it runs** (terminal 2; each change re-processes the last capture, no new detection needed):
+```bash
+sudo ros_bitsi/run.sh version v3           # BITSI algorithm: v0 v3 v4 v5
+sudo ros_bitsi/run.sh salsa "turn 90 deg"  # task command; "" turns SALSA off
+sudo ros_bitsi/run.sh target "laptop"      # objects to process (comma-separated; "" = all)
+```
+The web page has the same three controls. `sudo ros_bitsi/run.sh shell` opens a shell in the image with ROS sourced.
+
+## Before trusting a plan
+- Opaque objects only: RealSense depth passes through transparent plastic (the water bottle failed).
+- Clouds are single-view and partial; SALSA's rules were developed on full simulated clouds. Check the red grasp part.
+- Calibration tilt is unresolved: detect a closed laptop and check its top is level in the side view.
+- No IK, reachability or collision checks here; candidates are ordered by a heuristic only (see below).
+- Poses are at the pinch point; add the gripper's pinch-to-TCP offset along the approach (z) axis.
+- Gripper size: BITSI v0 uses `gripper_width` 0.13 / `gripper_height` 0.07, SALSA a 0.085 m jaw (Robotiq 2F-85).
+
+## Troubleshooting
+| Symptom | Check |
+|---|---|
+| `test` lists no `/perception` topics | pipeline started? same `ROS_DOMAIN_ID`? |
+| Nothing on :8090 after a detection | `BITSI_TARGET` matches the label? (`run.sh target ""` processes all objects) |
+| "only N points after filtering" | object too small / far / transparent, or the pipeline voxel is too coarse |
+| Wrong labels or ids | the node logs the `ObjectClouds` / `SegObjects` layouts at start; compare with `seg_interfaces/msg/*.msg` |
+| Variables ignored | they must come after `sudo` |
 
 ## SALSA: parts -> screw label -> end-effector pose sequence
 Give a task command and every processed object also gets a SALSA plan (`salsa_core.py`, using `fitpart/tasks/screws.py`):
@@ -120,5 +182,6 @@ segment + bitsi.json per object), `clouds_topic`, `result_topic`.
   `label`/`name` beside it). The node logs both message layouts on first receipt; if ids or labels show up wrong, check
   that log against `seg_interfaces/msg/*.msg` and adjust `ID_KEYS`/`LABEL_KEYS` in `bitsi_node.py`.
 - The depth clouds are partial (visible surface), whereas BITSI was developed on full models; expect coarser segments.
-- Tested here: `bitsi_core.run_bitsi` on a synthetic partial robot-frame cloud (2.1 s, 5 segments, robot-frame
-  centroids). Not tested here: the ROS node itself, the image build on aarch64, and the real seg_interfaces messages.
+- Tested on the robot (2026-10-24): build, BITSI v0, targets, web view (power drill, laptop, water bottle; results in
+  `docs/state/ORIN_BITSI_SALSA.md`). Not yet run on the robot: v3-v5, SALSA (`/salsa/plan`, `/salsa/poses`),
+  `run.sh version` / `run.sh salsa`.
