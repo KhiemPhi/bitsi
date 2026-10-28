@@ -15,6 +15,7 @@ usage:
   python3 send_salsa.py --ros --object drill --candidate 1     # read /salsa/plan live (inside a sourced ROS shell)
   python3 send_salsa.py plan.txt --only 0                      # just waypoint 0 (pre_grasp)
   python3 send_salsa.py plan.txt --step                        # one waypoint at a time, Enter before each
+  python3 send_salsa.py plan.txt --tograsp --csv poses.csv     # flange poses as tograsp-socp computes them
 """
 import argparse
 import json
@@ -30,6 +31,11 @@ ap.add_argument("--object", default="", help="object id or label substring (defa
 ap.add_argument("--candidate", type=int, default=0, help="candidate rank to send (0 = best by SALSA's heuristic)")
 ap.add_argument("--tcp-offset", type=float, default=0.0,
                 help="metres from the pinch point back to the server's TCP, along the approach axis")
+ap.add_argument("--pregrasp-offset", type=float, default=None,
+                help="put pre_grasp this far (m) back from the grasp pinch point along the approach (the plan uses 0.10)")
+ap.add_argument("--tograsp", action="store_true",
+                help="tograsp-socp convention (config.py): flange poses, grasp at G_DELTA 0.1434 m and pre-grasp at "
+                     "G_DELTA_INTER 0.18 m behind the grasp centre = --tcp-offset 0.1434 --pregrasp-offset 0.0366")
 ap.add_argument("--base-yaw", type=float, default=0.0,
                 help="degrees about the vertical (z) from the plan frame to the server's base frame; rotates positions "
                      "AND orientations (use when the robot base is turned relative to base_link)")
@@ -53,6 +59,8 @@ ap.add_argument("--yes", action="store_true", help="do not ask for confirmation 
 args = ap.parse_args()
 if not args.plan and not args.ros:
     ap.error("give a plan file or --ros")
+if args.tograsp:     # tograsp-socp/config.py: G_DELTA, G_DELTA_INTER (grasp centre -> flange, along the approach z)
+    args.tcp_offset, args.pregrasp_offset = 0.1434, 0.1800 - 0.1434
 
 
 def load_plan():
@@ -105,10 +113,14 @@ for i, p in enumerate(seq):
         acts[i] = want
     state = want
 
+grasp = next((p for p in seq if p["name"] == "grasp"), None)
 poses = []
 for i, p in enumerate(seq):
     R = Rotation.from_quat(p["quaternion_xyzw"]).as_matrix()      # scipy order is (x, y, z, w)
-    t = np.asarray(p["position"], float) - R[:, 2] * args.tcp_offset
+    t = np.asarray(p["position"], float)
+    if p["name"] == "pre_grasp" and args.pregrasp_offset is not None and grasp is not None:
+        t = np.asarray(grasp["position"], float) - R[:, 2] * args.pregrasp_offset
+    t = t - R[:, 2] * args.tcp_offset
     R = R @ Rotation.from_euler("z", args.tool_yaw, degrees=True).as_matrix()     # tool frame: about the approach
     Rb = Rotation.from_euler("z", args.base_yaw, degrees=True).as_matrix()         # plan frame -> server base frame
     t, R = Rb @ t, Rb @ R
