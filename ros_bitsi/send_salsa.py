@@ -28,6 +28,12 @@ ap.add_argument("--object", default="", help="object id or label substring (defa
 ap.add_argument("--candidate", type=int, default=0, help="candidate rank to send (0 = best by SALSA's heuristic)")
 ap.add_argument("--tcp-offset", type=float, default=0.0,
                 help="metres from the pinch point back to the server's TCP, along the approach axis")
+ap.add_argument("--base-yaw", type=float, default=0.0,
+                help="degrees about the vertical (z) from the plan frame to the server's base frame; rotates positions "
+                     "AND orientations (use when the robot base is turned relative to base_link)")
+ap.add_argument("--tool-yaw", type=float, default=0.0,
+                help="degrees about the approach axis applied to the gripper orientation only (use when the server's tool "
+                     "frame is turned relative to SALSA's: x, y=closing, z=approach)")
 ap.add_argument("--frame", default="base", help="frame name sent to the server (the plan is in its own frame_id)")
 ap.add_argument("--addr", default="tcp://localhost:5555")
 ap.add_argument("--seg-time", type=float, default=0.0,
@@ -83,7 +89,7 @@ if not 0 <= args.candidate < len(cands):
 seq = cands[args.candidate]["poses"]
 print(f"plan request {plan.get('request_id')} frame {plan.get('frame_id')} command '{plan.get('command')}'")
 print(f"object {obj.get('id')} ({obj.get('label')}), candidate {args.candidate} of {len(cands)}, {len(seq)} poses, "
-      f"tcp offset {args.tcp_offset:.3f} m")
+      f"tcp offset {args.tcp_offset:.3f} m, base yaw {args.base_yaw:g} deg, tool yaw {args.tool_yaw:g} deg")
 
 # gripper action on arrival: change of SALSA's gripper state between consecutive poses
 GRIP = {"open": "open", "close": "close", "hold": "close", "closed": "close"}
@@ -98,6 +104,9 @@ poses = []
 for i, p in enumerate(seq):
     R = Rotation.from_quat(p["quaternion_xyzw"]).as_matrix()      # scipy order is (x, y, z, w)
     t = np.asarray(p["position"], float) - R[:, 2] * args.tcp_offset
+    R = R @ Rotation.from_euler("z", args.tool_yaw, degrees=True).as_matrix()     # tool frame: about the approach
+    Rb = Rotation.from_euler("z", args.base_yaw, degrees=True).as_matrix()         # plan frame -> server base frame
+    t, R = Rb @ t, Rb @ R
     if t[2] < args.min_z or np.linalg.norm(t) > args.max_reach:
         sys.exit(f"pose {i} ({p['name']}) at ({t[0]:.3f}, {t[1]:.3f}, {t[2]:.3f}) is outside "
                  f"min_z {args.min_z} / reach {args.max_reach} m; not sending")
@@ -107,7 +116,7 @@ for i, p in enumerate(seq):
 if args.csv:   # for the CSV pose sender: one 4x4 matrix per line, 16 numbers row-major, '#' comments allowed
     with open(args.csv, "w") as f:
         f.write(f"# SALSA '{plan.get('command')}' object {obj.get('id')} ({obj.get('label')}) candidate {args.candidate}, "
-                f"frame {plan.get('frame_id')}, tcp offset {args.tcp_offset} m\n")
+                f"frame {plan.get('frame_id')}, tcp offset {args.tcp_offset} m, base yaw {args.base_yaw}, tool yaw {args.tool_yaw} deg\n")
         for name, t, R in poses:
             T = np.eye(4); T[:3, :3] = R; T[:3, 3] = t
             f.write(",".join(f"{v:.6f}" for v in T.ravel()) + f"  # {name}\n")
