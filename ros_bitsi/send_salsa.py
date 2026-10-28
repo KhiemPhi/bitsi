@@ -37,6 +37,7 @@ ap.add_argument("--min-z", type=float, default=-0.05, help="refuse waypoints bel
 ap.add_argument("--max-reach", type=float, default=0.90, help="refuse waypoints farther than this from the origin (m)")
 ap.add_argument("--proto-dir", default="", help="directory holding common_pb2.py / commands_pb2.py")
 ap.add_argument("--dry-run", action="store_true", help="print the waypoints, send nothing")
+ap.add_argument("--csv", default="", help="write the poses as 4x4 matrices for the CSV pose sender instead of sending")
 ap.add_argument("--yes", action="store_true", help="do not ask for confirmation before sending")
 args = ap.parse_args()
 if not args.plan and not args.ros:
@@ -103,7 +104,16 @@ for i, p in enumerate(seq):
     poses.append((p["name"], t, R))
     print(f"  [{i:2d}] {p['name']:<10s} pos=({t[0]:.3f}, {t[1]:.3f}, {t[2]:.3f})  gripper={acts.get(i, '-')}")
 
-if args.dry_run:
+if args.csv:   # for the CSV pose sender: one 4x4 matrix per line, 16 numbers row-major, '#' comments allowed
+    with open(args.csv, "w") as f:
+        f.write(f"# SALSA '{plan.get('command')}' object {obj.get('id')} ({obj.get('label')}) candidate {args.candidate}, "
+                f"frame {plan.get('frame_id')}, tcp offset {args.tcp_offset} m\n")
+        for name, t, R in poses:
+            T = np.eye(4); T[:3, :3] = R; T[:3, 3] = t
+            f.write(",".join(f"{v:.6f}" for v in T.ravel()) + f"  # {name}\n")
+    g = ",".join(f"{i}:{a}" for i, a in sorted(acts.items()))
+    print(f"wrote {args.csv}; send with:  python3 <csv sender> {args.csv} --gripper \"{g}\" --dry-run")
+if args.dry_run or args.csv:
     print(f"dry run: {len(poses)} waypoints, nothing sent")
     sys.exit(0)
 if plan.get("frame_id") and plan["frame_id"] not in (args.frame, f"{args.frame}_link"):
