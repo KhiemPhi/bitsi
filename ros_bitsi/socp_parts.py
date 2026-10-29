@@ -35,6 +35,8 @@ ap.add_argument("--tograsp-dir", default="~/tograsp-socp", help="clone of github
 ap.add_argument("--threshold", type=float, default=0.7, help="grasping-region threshold (main_pickup: 0.7)")
 ap.add_argument("--min-points", type=int, default=100, help="skip parts with fewer points")
 ap.add_argument("--base-yaw", type=float, default=0.0, help="degrees about z, robot frame -> server base (CSV only)")
+ap.add_argument("--table-z", type=float, default=None, help="table height in the robot frame (default: lowest point of the object)")
+ap.add_argument("--clearance", type=float, default=0.005, help="poses whose gripper comes closer than this to the table are dropped")
 ap.add_argument("--no-html", action="store_true")
 args = ap.parse_args()
 
@@ -91,6 +93,17 @@ print(f"task screw: {screw_src}; axis {np.round(u_base, 3).tolist()}"
 
 
 # ------------------------------------------------------------------ per part: tograsp-socp
+# gripper volume in the flange frame (z = approach, y = closing), Kinova Gen3 + Robotiq 2F-85, open: two fingers from the
+# palm to the pinch point, and the gripper body from the flange to the palm. Corners only (boxes, convex).
+_F = [(sx * 0.011, sy * 0.0425, z) for sx in (-1, 1) for sy in (-1, 1) for z in (0.095, 0.1434)]
+_B = [(sx * 0.04, sy * 0.06, z) for sx in (-1, 1) for sy in (-1, 1) for z in (0.0, 0.095)]
+GRIPPER_CORNERS = np.array(_F + _B + [(0, 0, 0)], float)
+
+
+def above_table(T, table_z):
+    return (T[:3, :3] @ GRIPPER_CORNERS.T + T[:3, 3:4])[2].min() >= table_z + args.clearance
+
+
 def run_part(path):
     pcd = o3d.io.read_point_cloud(path)
     name = os.path.splitext(os.path.basename(path))[0]
@@ -136,21 +149,29 @@ def run_part(path):
             g.metric_values = g.computed
             g.get_ideal_grasping_region()
             g.get_end_effector_poses()
-        poses = []
+        poses, n_table = [], 0
         for T, Ti in zip(g.computed_end_effector_poses, g.computed_end_effector_poses_inter):
             T, Ti = np.array(T, float), np.array(Ti, float)
             T[3] = Ti[3] = [0, 0, 0, 1]    # tograsp sets [3,3]=1 on the grasp pose twice, never on the pre-grasp
-            poses.append((Gbb @ T, Gbb @ Ti))
+            T, Ti = Gbb @ T, Gbb @ Ti
+            if above_table(T, TABLE_Z) and above_table(Ti, TABLE_Z):
+                poses.append((T, Ti))
+            else:
+                n_table += 1
         r.update(metric_min=float(lo), metric_max=float(hi), n_contacts=int(raw.size), n_feasible=int(ok.sum()),
-                 n_poses=len(poses), metric_unit="N" if TRANS else "N m")
+                 n_poses=len(poses), n_dropped_table=n_table, metric_unit="N" if TRANS else "N m")
+        if hi <= 0:
+            r["skip"] = f"metric {hi:.2f} <= 0: the grasp cannot hold the object's weight"; return r, None
         if not poses:
-            r["skip"] = "SOCP solved but no end-effector pose passed the approach checks"
+            r["skip"] = ("all {} poses would hit the table".format(n_table) if n_table else
+                         "SOCP solved but no end-effector pose passed the approach checks")
         return r, poses
     except Exception as e:
         r["skip"] = f"{type(e).__name__}: {e}"
         return r, None
 
 
+TABLE_Z = args.table_z if args.table_z is not None else min(np.asarray(o3d.io.read_point_cloud(p).points)[:, 2].min() for p in plys)
 results, all_poses = [], []
 for p in plys:
     r, poses = run_part(p)
