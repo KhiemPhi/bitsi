@@ -13,6 +13,7 @@ Outputs in the object folder:
     socp_parts.html   the same in an interactive 3D page (plotly, if installed): rotate / zoom / toggle parts
     socp_parts.json   per part: box, dims, metric range, poses (flange, robot frame); the best pose
     socp_best.csv     pre-grasp + grasp of the best pose as 4x4 matrices for the CSV pose sender
+    socp_poses.csv    every candidate (best first): pre-grasp + grasp lines, each with a note (part, metric, approach, fingertips)
 
 usage:
     python3 socp_parts.py ~/bitsi_outputs/<request>_<id>_<label> [--plan ~/bitsi_outputs/plan.txt] [--base-yaw 90]
@@ -51,6 +52,7 @@ from point_cloud_module.tograsp_socp import TOGrasp
 from socp_module.two_finger_gfop import TwoFingerGFOP
 import main_pickup as MP
 import main_gcsm as MG
+F_EXT0 = np.array(TC.F_EXTERNAL, float).reshape(6, 1)   # config.py's weight; restored after every part
 # same matrix as tograsp's get_skew_symmetric; the original float() on 1-element arrays fails under numpy >= 2
 TGF.get_skew_symmetric = lambda p: np.array([[0, -p[2, 0], p[1, 0]], [p[2, 0], 0, -p[0, 0]], [-p[1, 0], p[0, 0], 0]], float)
 
@@ -131,13 +133,15 @@ def run_part(path):
             g.generate_contacts()
             # the WHOLE object's weight (tograsp: 10 N along -z of the base) acting at the object's centroid, in the part's
             # box frame: tograsp alone puts it at the box centre, which makes every part look ideal when fed one by one
-            W = Gbb[:3, :3].T @ TC.F_EXTERNAL[:3, 0]
+            W = Gbb[:3, :3].T @ F_EXT0[:3, 0]
             r_com = Gbb[:3, :3].T @ (COM - Gbb[:3, 3])
             TC.F_EXTERNAL = np.r_[W, np.cross(r_com, W)].reshape(6, 1)
             gf = TwoFingerGFOP()
             gf.unit_vector = np.reshape(g.unit_vector, [3, 1])     # screw axis in the box frame (as main_pickup)
-            vals = (MP if TRANS else MG).build_and_solve_gfop(gf, g)
-            TC.F_EXTERNAL = np.reshape(np.asarray([0, 0, -10, 0, 0, 0]), [6, 1])
+            try:
+                vals = (MP if TRANS else MG).build_and_solve_gfop(gf, g)
+            finally:
+                TC.F_EXTERNAL = F_EXT0.copy()
             raw = np.asarray(vals, float).reshape(-1, 1)
             ok = ~np.isnan(raw)
             if not ok.any():
@@ -198,6 +202,29 @@ if all_poses:
         for name, M in (("pre_grasp", Ti), ("grasp", T)):
             f.write(",".join(f"{v:.6f}" for v in (Rb @ M).ravel()) + f"  # {name}\n")
     print(f"wrote {os.path.join(folder, 'socp_best.csv')}  (send with --gripper \"0:open,1:close\")")
+
+    def approach_name(z):
+        return ("top-down" if z[2] < -0.87 else "from below" if z[2] > 0.87 else
+                "side, " + ["+x", "-x", "+y", "-y"][int(np.argmax([z[0], -z[0], z[1], -z[1]]))] + " direction" if abs(z[2]) < 0.5
+                else f"tilted {np.degrees(np.arccos(-z[2])):.0f} deg from vertical")
+    order = sorted(range(len(all_poses)), key=lambda i: (all_poses[i][2] is not T, -all_poses[i][1]))   # best first, then by part metric
+    unit = "N" if TRANS else "N m"
+    with open(os.path.join(folder, "socp_poses.csv"), "w") as f:
+        f.write(f"# tograsp-socp grasp poses for {os.path.basename(folder)}\n"
+                f"# task screw ({screw_src}): {'translation' if TRANS else 'rotation'} axis {np.round(u_base, 3).tolist()}"
+                + ("" if TRANS else f" through {np.round(q_base, 3).tolist()}") + f"; metric = {'force along' if TRANS else 'moment about'} the screw ({unit})\n"
+                f"# parts from BITSI, screw from SALSA, grasps from tograsp-socp. Each line = one 4x4 pose, row-major, robot base frame"
+                f" rotated by base yaw {args.base_yaw} deg. Pose = Kinova tool FLANGE (fingertips are {TC.G_DELTA} m further along z);"
+                f" columns: x, y = finger closing direction, z = approach. Pre-grasp = {TC.G_DELTA_INTER} m flange stand-off, same orientation.\n"
+                f"# Send in pairs: pre_grasp (gripper open), then grasp (close). Rows are ordered best first, then by part metric.\n")
+        for n, i in enumerate(order):
+            part, m, Tg, Tp = all_poses[i]
+            pin = Tg[:3, 3] + TC.G_DELTA * Tg[:3, 2]
+            note = (f"{'BEST ' if Tg is T else ''}{part} candidate {n}: part metric max {m:.2f} {unit}; approach {approach_name(Tg[:3, 2])};"
+                    f" fingertips at ({pin[0]:.3f}, {pin[1]:.3f}, {pin[2]:.3f}) m, closing along ({Tg[0, 1]:.2f}, {Tg[1, 1]:.2f}, {Tg[2, 1]:.2f})")
+            f.write(",".join(f"{v:.6f}" for v in (Rb @ Tp).ravel()) + f"  # pre_grasp | {note}\n")
+            f.write(",".join(f"{v:.6f}" for v in (Rb @ Tg).ravel()) + f"  # grasp | {note}\n")
+    print(f"wrote {os.path.join(folder, 'socp_poses.csv')}  ({len(order)} grasp candidates, pre-grasp + grasp each, with notes)")
 else:
     print("no part produced a grasp pose")
 json.dump(dict(folder=folder, screw=dict(axis=u_base.tolist(), point=q_base.tolist(), translation=TRANS, source=screw_src),
