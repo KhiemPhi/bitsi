@@ -33,7 +33,9 @@ ap.add_argument("folder", help="object folder with one .ply per part (or BITSI_O
 ap.add_argument("--latest", action="store_true", help="use the newest object folder inside FOLDER")
 ap.add_argument("--plan", default="", help="SALSA plan (/salsa/plan JSON or saved echo) for the task screw")
 ap.add_argument("--tograsp-dir", default="~/tograsp-socp", help="clone of github.com/apat20/tograsp-socp")
-ap.add_argument("--threshold", type=float, default=0.7, help="grasping-region threshold (main_pickup: 0.7)")
+ap.add_argument("--threshold", type=float, default=None,
+                help="grasping-region threshold on the normalized metric (default: 0.7 as main_pickup for a translation; 0 for a"
+                     " swing / turn / fasten, where every feasible contact is kept and the pose nearest the screw axis is chosen)")
 ap.add_argument("--min-points", type=int, default=100, help="skip parts with fewer points")
 ap.add_argument("--base-yaw", type=float, default=0.0, help="degrees about z, robot frame -> server base (CSV only)")
 ap.add_argument("--table-z", type=float, default=None, help="table height in the robot frame (default: lowest point of the object)")
@@ -69,6 +71,10 @@ print(f"object folder {folder}: {len(plys)} parts")
 
 
 # ------------------------------------------------------------------ task screw (robot frame)
+SCREW_TASK = "lift"
+HAND_PIVOT = ("swing", "turn", "fasten", "twist")   # tasks whose screw axis passes through the hand (swing: the centre-of-percussion grip)
+
+
 def load_screw():
     if not args.plan:
         return np.array([0, 0, 1.0]), np.zeros(3), True, "pickup (tograsp default): translate along +z"
@@ -84,12 +90,17 @@ def load_screw():
         sys.exit("the plan has no task screw")
     s = obj["screw"]
     trans = bool(s.get("translation")) or s.get("pitch") is None
+    global SCREW_TASK
+    SCREW_TASK = s.get("task", "")
     return np.asarray(s["axis"], float), np.asarray(s["point"], float), trans, f"SALSA '{plan.get('command')}'"
 
 
 u_base, q_base, TRANS, screw_src = load_screw()
 COM = np.vstack([np.asarray(o3d.io.read_point_cloud(p).points) for p in plys]).mean(0)   # object centroid ~ centre of mass
 u_base /= np.linalg.norm(u_base)
+ON_AXIS = SCREW_TASK in HAND_PIVOT and not TRANS
+THRESHOLD = args.threshold if args.threshold is not None else (0.0 if ON_AXIS else 0.7)
+POSE_METRIC = {}   # id(grasp matrix) -> SOCP metric of the sampled contact pair nearest its fingertips
 print(f"task screw: {screw_src}; axis {np.round(u_base, 3).tolist()}"
       + ("" if TRANS else f" through {np.round(q_base, 3).tolist()}") + f"; metric = {'force' if TRANS else 'moment'}")
 
@@ -120,7 +131,7 @@ def run_part(path):
             g = TOGrasp(cloud)
             g.GRIPPER_WIDTH_TOLERANCE, g.GRIPPER_HEIGHT_TOLERANCE = TC.GRIPPER_WIDTH_TOLERANCE, TC.GRIPPER_HEIGHT_TOLERANCE
             g.G_DELTA, g.G_DELTA_INTER = TC.G_DELTA, TC.G_DELTA_INTER
-            g.grasp_metric_threshold = args.threshold
+            g.grasp_metric_threshold = THRESHOLD
             g.unit_vector_base = np.r_[u_base, 0.0]
             g.point_base = np.r_[q_base, 1.0]
             Gbb = cloud.g_bounding_box
@@ -169,6 +180,13 @@ def run_part(path):
         if not poses:
             r["skip"] = ("all {} poses would hit the table".format(n_table) if n_table else
                          "SOCP solved but no end-effector pose passed the approach checks")
+        if poses:   # each pose's own metric: the solved contact pair whose midpoint is nearest the pose's fingertips
+            mid = 0.5 * (np.asarray(g.sampled_c1, float) + np.asarray(g.sampled_c2, float))
+            mid = mid @ Gbb[:3, :3].T + Gbb[:3, 3]
+            for T, _ in poses:
+                d = np.linalg.norm(mid - (T[:3, 3] + TC.G_DELTA * T[:3, 2]), axis=1)
+                d[~ok[:, 0]] = np.inf
+                POSE_METRIC[id(T)] = float(raw[np.argmin(d), 0])
         return r, poses
     except Exception as e:
         r["skip"] = f"{type(e).__name__}: {e}"
@@ -181,7 +199,7 @@ for p in plys:
     r, poses = run_part(p)
     results.append(r)
     if poses:
-        r["poses"] = [dict(grasp=T.tolist(), pre_grasp=Ti.tolist()) for T, Ti in poses]
+        r["poses"] = [dict(grasp=T.tolist(), pre_grasp=Ti.tolist(), metric=POSE_METRIC.get(id(T))) for T, Ti in poses]
         all_poses += [(r["part"], r["metric_max"], T, Ti) for T, Ti in poses]
     print(f"  {r['part']:<12s} {r['n_points']:6d} pts  " + (f"skipped: {r['skip']}" if "skip" in r and not poses else
           f"box {r['dims'][0]:.2f}x{r['dims'][1]:.2f}x{r['dims'][2]:.2f} m, metric {r['metric_min']:.2f}..{r['metric_max']:.2f} "
@@ -189,11 +207,18 @@ for p in plys:
 
 best = None
 if all_poses:
-    # best part = highest SOCP metric (ties within 0.1 broken by the part's worst metric, then its size); its first pose
+    # best part = highest SOCP metric (ties within 0.1 broken by the part's worst metric, then its size). Within a part:
+    # for a swing / turn / fasten (the hand is the pivot), the pose whose fingertips are nearest the screw axis (tograsp's moment metric is a pure couple, so it
+    # does not see where the axis is; the hand should be the pivot, e.g. a swing pivot at the centre-of-percussion grip);
+    # for a translation, tograsp's first pose.
     npts = {r["part"]: r["n_points"] for r in results}
     lo = {r["part"]: r.get("metric_min", 0) for r in results}
-    part, m, T, Ti = max(all_poses, key=lambda a: (round(a[1], 1), round(lo[a[0]], 1), npts[a[0]]))
-    best = dict(part=part, metric=m, grasp=T.tolist(), pre_grasp=Ti.tolist())
+
+    def axis_dist(Tg):
+        v = Tg[:3, 3] + TC.G_DELTA * Tg[:3, 2] - q_base
+        return float(np.linalg.norm(v - (v @ u_base) * u_base)) if ON_AXIS else 0.0
+    part, m, T, Ti = max(all_poses, key=lambda a: (round(a[1], 1), round(lo[a[0]], 1), npts[a[0]], -axis_dist(a[2])))
+    best = dict(part=part, metric=m, pose_metric=POSE_METRIC.get(id(T)), grasp=T.tolist(), pre_grasp=Ti.tolist())
     print(f"best: part {part} (metric {m:.2f}); grasp flange at {np.round(T[:3, 3], 3).tolist()}")
     c, s = np.cos(np.radians(args.base_yaw)), np.sin(np.radians(args.base_yaw))
     Rb = np.eye(4); Rb[:2, :2] = [[c, -s], [s, c]]
@@ -207,7 +232,7 @@ if all_poses:
         return ("top-down" if z[2] < -0.87 else "from below" if z[2] > 0.87 else
                 "side, " + ["+x", "-x", "+y", "-y"][int(np.argmax([z[0], -z[0], z[1], -z[1]]))] + " direction" if abs(z[2]) < 0.5
                 else f"tilted {np.degrees(np.arccos(-z[2])):.0f} deg from vertical")
-    order = sorted(range(len(all_poses)), key=lambda i: (all_poses[i][2] is not T, -all_poses[i][1]))   # best first, then by part metric
+    order = sorted(range(len(all_poses)), key=lambda i: (all_poses[i][2] is not T, -round(all_poses[i][1], 1), axis_dist(all_poses[i][2])))   # best first, then part metric, then axis distance
     unit = "N" if TRANS else "N m"
     with open(os.path.join(folder, "socp_poses.csv"), "w") as f:
         f.write(f"# tograsp-socp grasp poses for {os.path.basename(folder)}\n"
@@ -220,8 +245,8 @@ if all_poses:
         for n, i in enumerate(order):
             part, m, Tg, Tp = all_poses[i]
             pin = Tg[:3, 3] + TC.G_DELTA * Tg[:3, 2]
-            note = (f"{'BEST ' if Tg is T else ''}{part} candidate {n}: part metric max {m:.2f} {unit}; approach {approach_name(Tg[:3, 2])};"
-                    f" fingertips at ({pin[0]:.3f}, {pin[1]:.3f}, {pin[2]:.3f}) m, closing along ({Tg[0, 1]:.2f}, {Tg[1, 1]:.2f}, {Tg[2, 1]:.2f})")
+            note = (f"{'BEST ' if Tg is T else ''}{part} candidate {n}: pose metric {POSE_METRIC.get(id(Tg), float('nan')):.2f} {unit} (part max {m:.2f}); approach {approach_name(Tg[:3, 2])};"
+                    f" fingertips at ({pin[0]:.3f}, {pin[1]:.3f}, {pin[2]:.3f}) m" + (f", {axis_dist(Tg) * 100:.1f} cm from the screw axis" if ON_AXIS else "") + f", closing along ({Tg[0, 1]:.2f}, {Tg[1, 1]:.2f}, {Tg[2, 1]:.2f})")
             f.write(",".join(f"{v:.6f}" for v in (Rb @ Tp).ravel()) + f"  # pre_grasp | {note}\n")
             f.write(",".join(f"{v:.6f}" for v in (Rb @ Tg).ravel()) + f"  # grasp | {note}\n")
     print(f"wrote {os.path.join(folder, 'socp_poses.csv')}  ({len(order)} grasp candidates, pre-grasp + grasp each, with notes)")
